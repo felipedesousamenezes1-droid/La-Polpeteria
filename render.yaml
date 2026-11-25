@@ -1,0 +1,22 @@
+# Blueprint do Render (https://render.com/docs/blueprint-spec)
+# Usa DISCO PERSISTENTE para o banco SQLite. Discos exigem plano pago (ex.: Starter);
+# no plano gratuito o disco é temporário e os pedidos seriam perdidos a cada deploy.
+services:
+  - type: web
+    name: la-polpeteria
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATA_DIR
+        value: /var/data
+      - key: TZ
+        value: America/Sao_Paulo
+      - key: NODE_VERSION
+        value: '22'
+    disk:
+      name: dados-pedidos
+      mountPath: /var/data
+      sizeGB: 1

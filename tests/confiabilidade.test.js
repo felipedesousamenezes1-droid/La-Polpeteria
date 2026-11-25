@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import { io } from 'socket.io-client';
 import { createOutbox, createHttpSender, memoryStorage } from '../client/src/lib/outbox-core.js';
 import { splitCents } from '../client/src/lib/util.js';
-import { startServer, tmpDataDir, login, device, newOrder, sleep, stripVolatile, PINS } from './helpers.js';
+import { startServer, tmpDataDir, login, device, newOrder, sleep, stripVolatile, PINS, ID, PRICE, SIMPLE_IDS } from './helpers.js';
 
 const T = { timeout: 30_000 };
 const servers = [];
@@ -20,7 +20,7 @@ async function boot(name, opts = {}) {
   return { srv, dataDir };
 }
 function countOrders(dataDir, where = '1=1', ...params) {
-  const db = new Database(path.join(dataDir, 'pulpeteria.db'), { readonly: true });
+  const db = new Database(path.join(dataDir, 'polpeteria.db'), { readonly: true });
   const n = db.prepare(`SELECT COUNT(*) FROM orders WHERE ${where}`).pluck().get(...params);
   db.close();
   return n;
@@ -67,7 +67,7 @@ describe('1. Queda de internet durante o envio', () => {
     await dev.outbox.init();
 
     dev.net.mode = 'offline';
-    const entry = await dev.outbox.enqueue({ ...newOrder(2, [[6, 2, 'sem cebola'], [24, 2]]) });
+    const entry = await dev.outbox.enqueue({ ...newOrder(2, [[ID.risotto, 2, 'sem cebola'], [ID.refri, 2]]) });
     await dev.outbox.flush();
 
     assert.equal(dev.outbox.snapshot().pending, 1, 'indicador: 1 pedido pendente');
@@ -96,7 +96,7 @@ describe('1. Queda de internet durante o envio', () => {
     await dev.outbox.init();
 
     dev.net.mode = 'drop-response';
-    const entry = await dev.outbox.enqueue(newOrder(3, [[12, 1], [13, 1]]));
+    const entry = await dev.outbox.enqueue(newOrder(3, [[ID.trapanese, 1], [ID.ortolana, 1]]));
     await dev.outbox.flush();
     assert.equal(dev.outbox.get(entry.id).status, 'pending', 'sem confirmação => continua Pendente, nunca "Enviado"');
     assert.equal(countOrders(dataDir, 'id = ?', entry.id), 1, 'o servidor gravou');
@@ -121,7 +121,7 @@ describe('1. Queda de internet durante o envio', () => {
     await dev.outbox.init();
     await srv.stop(); // servidor desligado (ex.: computador do restaurante reiniciando)
     const ids = [];
-    for (let i = 1; i <= 5; i++) ids.push((await dev.outbox.enqueue(newOrder(i, [[i, 1]]))).id);
+    for (let i = 1; i <= 5; i++) ids.push((await dev.outbox.enqueue(newOrder(i, [[ID.espresso, i]]))).id);
     await dev.outbox.flush();
     assert.equal(dev.outbox.snapshot().pending, 5);
 
@@ -140,11 +140,11 @@ describe('1. Queda de internet durante o envio', () => {
     const { srv } = await boot('conta-fechada-offline');
     const garcom = await login(srv.base, 'garcom');
     const caixa = await login(srv.base, 'caixa');
-    const first = (await garcom.post('/api/orders', newOrder(10, [[1, 1]]))).data.order;
+    const first = (await garcom.post('/api/orders', newOrder(10, [[ID.agua, 1]]))).data.order;
     const dev = waiterDevice(srv.base, garcom.token);
     await dev.outbox.init();
     dev.net.mode = 'offline';
-    const entry = await dev.outbox.enqueue(newOrder(10, [[2, 1]], { tabId: first.tabId }));
+    const entry = await dev.outbox.enqueue(newOrder(10, [[ID.refri, 1]], { tabId: first.tabId }));
     await dev.outbox.flush();
     // Enquanto isso o caixa fecha a conta.
     const bill = (await caixa.get(`/api/tabs/${first.tabId}/bill`)).data;
@@ -167,7 +167,7 @@ describe('2. Reenvio duplicado do mesmo pedido', () => {
   test('mesmo UUID reenviado em sequência e em paralelo gera um único pedido', T, async () => {
     const { srv, dataDir } = await boot('duplicado');
     const garcom = await login(srv.base, 'garcom');
-    const order = newOrder(4, [[6, 2, 'sem queijo'], [22, 1]]);
+    const order = newOrder(4, [[ID.risotto, 2, 'sem queijo'], [ID.cheesecake, 1]]);
 
     const first = await garcom.post('/api/orders', order);
     assert.equal(first.status, 201);
@@ -181,7 +181,7 @@ describe('2. Reenvio duplicado do mesmo pedido', () => {
     assert.ok(parallel.every((r) => r.status === 200 && r.data.duplicate));
 
     // Reenvio paralelo de um pedido NOVO: exatamente um 201.
-    const other = newOrder(4, [[12, 1]]);
+    const other = newOrder(4, [[ID.trapanese, 1]]);
     const race = await Promise.all(Array.from({ length: 20 }, () => garcom.post('/api/orders', other)));
     assert.equal(race.filter((r) => r.status === 201).length, 1);
     assert.equal(race.filter((r) => r.status === 200).length, 19);
@@ -191,15 +191,15 @@ describe('2. Reenvio duplicado do mesmo pedido', () => {
     const o = state.orders.find((x) => x.id === order.id);
     assert.equal(o.items.length, 2);
     assert.equal(o.items[0].qty, 2);
-    assert.equal(state.tabs.find((t) => t.tableNumber === 4).totalCents, 2 * 6200 + 3000 + 5600, 'carbonara×2 + cannoli + margherita');
+    assert.equal(state.tabs.find((t) => t.tableNumber === 4).totalCents, 2 * PRICE.risotto + PRICE.cheesecake + PRICE.trapanese);
   });
 
   test('mesmo UUID com conteúdo diferente é recusado e o original fica intacto', T, async () => {
     const { srv } = await boot('conflito-id');
     const garcom = await login(srv.base, 'garcom');
-    const order = newOrder(5, [[6, 1]]);
+    const order = newOrder(5, [[ID.risotto, 1]]);
     await garcom.post('/api/orders', order);
-    const tampered = { ...order, items: [{ menuItemId: 6, qty: 9, notes: '' }] };
+    const tampered = { ...order, items: [{ menuItemId: ID.risotto, qty: 9, notes: '' }] };
     const r = await garcom.post('/api/orders', tampered);
     assert.equal(r.status, 409);
     assert.equal(r.data.error, 'ID_CONFLICT');
@@ -210,7 +210,7 @@ describe('2. Reenvio duplicado do mesmo pedido', () => {
   test('cancelamento reenviado (mesmo id) não cancela em dobro', T, async () => {
     const { srv } = await boot('cancel-dup');
     const garcom = await login(srv.base, 'garcom');
-    const order = (await garcom.post('/api/orders', newOrder(6, [[6, 3]]))).data.order;
+    const order = (await garcom.post('/api/orders', newOrder(6, [[ID.risotto, 3]]))).data.order;
     const body = { cancellationId: crypto.randomUUID(), qty: 1, reason: 'Cliente desistiu' };
     const rs = await Promise.all([1, 2, 3].map(() => garcom.post(`/api/items/${order.items[0].id}/cancel`, body)));
     assert.ok(rs.every((r) => r.status === 200));
@@ -228,9 +228,9 @@ describe('3. Reinício do servidor com pedidos abertos', () => {
     const admin = await login(srv.base, 'admin');
 
     // Movimento antes da queda
-    const o1 = (await garcom.post('/api/orders', newOrder(1, [[6, 2, 'sem pimenta'], [24, 2]]))).data.order;
-    const o2 = (await garcom.post('/api/orders', newOrder(2, [[12, 1], [16, 1]]))).data.order;
-    const o3 = (await garcom.post('/api/orders', newOrder(1, [[20, 2]]))).data.order;
+    const o1 = (await garcom.post('/api/orders', newOrder(1, [[ID.risotto, 2, 'sem pimenta'], [ID.refri, 2]]))).data.order;
+    const o2 = (await garcom.post('/api/orders', newOrder(2, [[ID.trapanese, 1], [ID.combo, 1, '', [ID.rotolini, ID.ortolana, ID.cheesecake]]]))).data.order;
+    const o3 = (await garcom.post('/api/orders', newOrder(1, [[ID.tiramisu, 2]]))).data.order;
     await cozinha.post(`/api/orders/${o1.id}/status`, { from: 'novo', to: 'preparando' });
     await cozinha.post(`/api/orders/${o2.id}/status`, { from: 'novo', to: 'preparando' });
     await cozinha.post(`/api/orders/${o2.id}/status`, { from: 'preparando', to: 'pronto' });
@@ -259,7 +259,7 @@ describe('3. Reinício do servidor com pedidos abertos', () => {
     await dev.outbox.init();
 
     await srv.crash(); // SIGKILL: sem fechamento limpo, sem checkpoint
-    const pending = await dev.outbox.enqueue(newOrder(3, [[14, 1]]));
+    const pending = await dev.outbox.enqueue(newOrder(3, [[ID.cheesecake, 1]]));
     await dev.outbox.flush();
     assert.equal(dev.outbox.snapshot().pending, 1, 'durante a queda o pedido fica pendente no aparelho');
 
@@ -291,13 +291,13 @@ describe('3. Reinício do servidor com pedidos abertos', () => {
     assert.equal(lastResync.orders.find((o) => o.id === pending.id)?.status, 'novo', 'pedido pendente apareceu na cozinha');
 
     // E o tempo real volta a funcionar: um pedido novo chega ao vivo pelo socket reconectado.
-    const live = newOrder(4, [[9, 1]]);
+    const live = newOrder(4, [[ID.espresso, 1]]);
     const got = new Promise((resolve) => kitchenSocket.on('order:upsert', ({ data }) => data.id === live.id && resolve(data)));
     await device(again.base, garcom.token).post('/api/orders', live);
     assert.equal((await got).tableNumber, 4);
 
     // Integridade física do arquivo e da cadeia de auditoria
-    const db = new Database(path.join(dataDir, 'pulpeteria.db'), { readonly: true });
+    const db = new Database(path.join(dataDir, 'polpeteria.db'), { readonly: true });
     assert.equal(db.pragma('integrity_check', { simple: true }), 'ok');
     assert.equal(db.pragma('journal_mode', { simple: true }), 'wal');
     db.close();
@@ -308,7 +308,7 @@ describe('3. Reinício do servidor com pedidos abertos', () => {
   test('reinício normal (SIGTERM) também preserva tudo', T, async () => {
     const { srv, dataDir } = await boot('reinicio-normal');
     const garcom = await login(srv.base, 'garcom');
-    await garcom.post('/api/orders', newOrder(7, [[3, 4]]));
+    await garcom.post('/api/orders', newOrder(7, [[ID.agua, 4]]));
     const before = stripVolatile((await garcom.get('/api/state')).data);
     await srv.stop();
     const again = await startServer({ dataDir, port: srv.port });
@@ -327,8 +327,8 @@ describe('4. Dois garçons na mesma mesa ao mesmo tempo', () => {
     const menu = (await ana.get('/api/state')).data.menu;
     const price = (id) => menu.find((m) => m.id === id).priceCents;
 
-    const ordersA = Array.from({ length: 10 }, (_, i) => newOrder(7, [[(i % 5) + 1, 1 + (i % 3)]]));
-    const ordersB = Array.from({ length: 10 }, (_, i) => newOrder(7, [[(i % 6) + 10, 1 + (i % 2), i % 2 ? 'sem cebola' : '']]));
+    const ordersA = Array.from({ length: 10 }, (_, i) => newOrder(7, [[SIMPLE_IDS[i % 5], 1 + (i % 3)]]));
+    const ordersB = Array.from({ length: 10 }, (_, i) => newOrder(7, [[SIMPLE_IDS[5 + (i % 6)], 1 + (i % 2), i % 2 ? 'sem cebola' : '']]));
     const results = await Promise.all([
       ...ordersA.map((o) => ana.post('/api/orders', o)),
       ...ordersB.map((o) => bruno.post('/api/orders', o)),
@@ -360,15 +360,15 @@ describe('4. Dois garçons na mesma mesa ao mesmo tempo', () => {
     const { srv } = await boot('dois-garcons-2');
     const ana = await login(srv.base, 'garcom', { name: 'Ana' });
     const bruno = await login(srv.base, 'garcom', { name: 'Bruno' });
-    const first = (await ana.post('/api/orders', newOrder(8, [[6, 1]]))).data.order;
+    const first = (await ana.post('/api/orders', newOrder(8, [[ID.risotto, 1]]))).data.order;
     const [a, b] = await Promise.all([
-      ana.post('/api/orders', newOrder(8, [[7, 1]], { tabId: first.tabId })),
-      bruno.post('/api/orders', newOrder(8, [[8, 2]])), // Bruno ainda via a mesa como livre
+      ana.post('/api/orders', newOrder(8, [[ID.trapanese, 1]], { tabId: first.tabId })),
+      bruno.post('/api/orders', newOrder(8, [[ID.ortolana, 2]])), // Bruno ainda via a mesa como livre
     ]);
     assert.equal(a.data.order.tabId, first.tabId);
     assert.equal(b.data.order.tabId, first.tabId);
     const tab = (await ana.get('/api/state')).data.tabs.find((t) => t.id === first.tabId);
-    assert.equal(tab.totalCents, 6200 + 6600 + 2 * 5800);
+    assert.equal(tab.totalCents, PRICE.risotto + PRICE.trapanese + 2 * PRICE.ortolana);
   });
 });
 
@@ -391,7 +391,7 @@ describe('5. Conferência: total do caixa = itens enviados − cancelados', () =
       assert.equal(r.status, 201);
       tabId = r.data.order.tabId;
       for (const [menuItemId, qty] of items) {
-        const it = r.data.order.items.find((i) => i.menuItemId === menuItemId && i.qty === qty);
+        const it = r.data.order.items.find((i) => i.menuItemId === menuItemId && i.qty === qty && !ledger.some((l) => l.itemId === i.id));
         ledger.push({ itemId: it.id, qty, unit: await priceNow(menuItemId) });
       }
       return r.data.order;
@@ -401,7 +401,7 @@ describe('5. Conferência: total do caixa = itens enviados − cancelados', () =
       const lines = [];
       const used = new Set();
       for (let j = 0; j < 1 + rand(4); j++) {
-        const id = 1 + rand(27);
+        const id = SIMPLE_IDS[rand(SIMPLE_IDS.length)];
         if (used.has(id)) continue;
         used.add(id);
         lines.push([id, 1 + rand(4)]);
@@ -409,10 +409,12 @@ describe('5. Conferência: total do caixa = itens enviados − cancelados', () =
       await send(lines);
     }
     // Troca de preço no meio do serviço: só afeta o que for lançado depois.
-    const oldPrice = await priceNow(5);
-    await admin.put('/api/admin/menu/5', { priceCents: oldPrice + 1234 });
-    await send([[5, 2]]);
-    await admin.put('/api/admin/menu/5', { priceCents: oldPrice });
+    const oldPrice = await priceNow(ID.ortolana);
+    await admin.put(`/api/admin/menu/${ID.ortolana}`, { priceCents: oldPrice + 1234 });
+    await send([[ID.ortolana, 2]]);
+    await admin.put(`/api/admin/menu/${ID.ortolana}`, { priceCents: oldPrice });
+    // Menu Completo: cobra o preço do menu (não a soma das escolhas).
+    await send([[ID.combo, 2, '', [ID.rotolini, ID.trapanese, ID.cheesecake]]]);
 
     // Cancelamentos: parcial, total de uma linha e de um pedido inteiro.
     const cancels = [];
@@ -426,7 +428,7 @@ describe('5. Conferência: total do caixa = itens enviados − cancelados', () =
     await cancel(multi.itemId, 1);
     const single = ledger.find((l) => l !== multi);
     await cancel(single.itemId, single.qty, caixa);
-    const wholeOrder = await send([[26, 2], [27, 3]]);
+    const wholeOrder = await send([[ID.chianti, 2], [ID.espresso, 3]]);
     for (const it of wholeOrder.items) await cancel(it.id, it.qty);
 
     const sentTotal = ledger.reduce((s, l) => s + l.qty * l.unit, 0);
@@ -453,7 +455,7 @@ describe('5. Conferência: total do caixa = itens enviados − cancelados', () =
     const closed = await caixa.post(`/api/tabs/${tabId}/close`, { expectedTotalCents: expected });
     assert.equal(closed.status, 200);
     assert.equal(closed.data.tab.closedTotalCents, expected);
-    assert.equal((await garcom.post('/api/orders', newOrder(12, [[1, 1]], { tabId }))).data.error, 'TAB_CLOSED');
+    assert.equal((await garcom.post('/api/orders', newOrder(12, [[ID.agua, 1]], { tabId }))).data.error, 'TAB_CLOSED');
     assert.equal((await garcom.post(`/api/items/${multi.itemId}/cancel`, { cancellationId: crypto.randomUUID(), qty: 1, reason: 'depois de fechar' })).data.error, 'TAB_CLOSED');
 
     // Reabrir exige PIN de Admin e fica registrado (inclusive a tentativa negada).

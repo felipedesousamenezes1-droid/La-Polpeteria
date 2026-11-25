@@ -148,6 +148,20 @@ export function PinPad({ value, onChange, onSubmit, maxLength = 8, disabled }) {
   );
 }
 
+/** Escolhas de um Menu Completo (entrada / prato principal / sobremesa). */
+export function ComboParts({ components, className = 'text-sm', stepClass = 'text-oro-700' }) {
+  if (!components?.length) return null;
+  return (
+    <ul className={`mt-0.5 ${className}`}>
+      {components.map((c) => (
+        <li key={c.step}>
+          <span className={`font-semibold ${stepClass}`}>{c.step}:</span> {c.name}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function useNow(intervalMs = 1000) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {

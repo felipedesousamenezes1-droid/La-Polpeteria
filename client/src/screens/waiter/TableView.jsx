@@ -1,12 +1,73 @@
 import { useMemo, useState } from 'react';
-import { CATEGORIES, QUICK_NOTES, TAB_STATUS_LABELS } from '../../../../shared/constants.js';
+import { CATEGORIES, QUICK_NOTES, TAB_STATUS_LABELS, COMBO_CATEGORY, COMBO_STEPS } from '../../../../shared/constants.js';
 import { useAppState, addToDraft, setDraft, submitDraft, activeTabFor, toast, getState } from '../../lib/store.js';
 import { money, normalize, vibrate } from '../../lib/util.js';
-import { Icon, Modal, QtyStepper } from '../../components/ui.jsx';
+import { Icon, Modal, QtyStepper, ComboParts } from '../../components/ui.jsx';
 import TabOrders from './TabOrders.jsx';
+
+function comboOptions(menu) {
+  return COMBO_STEPS.map((step) => menu.filter((m) => m.active && m.inCombo && step.categories.includes(m.category)));
+}
+
+/** Menu Completo: uma escolha por etapa; com a última escolha o item entra no pedido (sem toque extra). */
+function ComboPicker({ combo, table, onClose }) {
+  const s = useAppState();
+  const options = useMemo(() => comboOptions(s.menu), [s.menu]);
+  const [picked, setPicked] = useState(() => options.map((o) => (o.length === 1 ? o[0] : null)));
+  function choose(i, m) {
+    const next = [...picked];
+    next[i] = m;
+    setPicked(next);
+    if (next.every(Boolean)) {
+      addToDraft(table, combo, COMBO_STEPS.map((st, k) => ({ step: st.label, menuItemId: next[k].id, name: next[k].name })));
+      vibrate(12);
+      toast(`${combo.name} adicionado`, 'ok', 1500);
+      onClose();
+    }
+  }
+  return (
+    <Modal open onClose={onClose} title={`${combo.name} · ${money(combo.priceCents)}`} size="lg">
+      {COMBO_STEPS.map((step, i) => (
+        <section key={step.key} className="mb-4">
+          <h3 className="mb-2 font-serif text-lg font-bold text-pomodoro-700">
+            {i + 1}. {step.label}
+          </h3>
+          {!options[i].length && <p className="text-sm text-seppia">Nenhuma opção ativa. Marque pratos como "faz parte do Menu Completo" no Admin.</p>}
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {options[i].map((m) => (
+              <button
+                key={m.id}
+                onClick={() => choose(i, m)}
+                data-testid={`combo-${step.key}-${m.id}`}
+                className={`min-h-14 rounded-2xl border-2 px-3 py-2 text-left font-semibold transition-transform duration-75 active:scale-[0.98] ${
+                  picked[i]?.id === m.id ? 'border-basilico-700 bg-basilico-700 text-white' : 'border-crema-300 bg-white'
+                }`}
+              >
+                {m.name}
+              </button>
+            ))}
+          </div>
+        </section>
+      ))}
+    </Modal>
+  );
+}
 
 function MenuPicker({ table, lines }) {
   const s = useAppState();
+  const [combo, setCombo] = useState(null);
+  function tap(m) {
+    if (m.category === COMBO_CATEGORY) {
+      const opts = comboOptions(s.menu);
+      if (opts.every((o) => o.length === 1)) {
+        addToDraft(table, m, COMBO_STEPS.map((st, k) => ({ step: st.label, menuItemId: opts[k][0].id, name: opts[k][0].name })));
+        vibrate(12);
+      } else setCombo(m);
+      return;
+    }
+    addToDraft(table, m);
+    vibrate(12);
+  }
   const [cat, setCat] = useState('Todos');
   const [query, setQuery] = useState('');
   const qtyByItem = useMemo(() => {
@@ -62,7 +123,10 @@ function MenuPicker({ table, lines }) {
         {groups.length === 0 && <p className="py-10 text-center text-seppia">Nenhum item encontrado.</p>}
         {groups.map(([c, list]) => (
           <section key={c} className="mb-3">
-            <h3 className="sticky top-0 z-10 -mx-3 bg-crema-100 px-3 py-1 font-serif text-lg font-bold text-basilico-800">{c}</h3>
+            <h3 className="sticky top-0 z-10 -mx-3 flex items-center gap-3 bg-crema-100 px-3 py-1 font-serif text-xl font-semibold text-pomodoro-700">
+              {c}
+              <span className="h-0 flex-1 border-t-2 border-dashed border-pomodoro-200" />
+            </h3>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               {list.map((m) => {
                 const qty = qtyByItem.get(m.id) || 0;
@@ -70,12 +134,9 @@ function MenuPicker({ table, lines }) {
                   <button
                     key={m.id}
                     data-testid={`item-${m.id}`}
-                    onClick={() => {
-                      addToDraft(table, m);
-                      vibrate(12);
-                    }}
+                    onClick={() => tap(m)}
                     className={`flex min-h-16 w-full items-center gap-3 rounded-2xl border-2 px-3 py-2 text-left transition-transform duration-75 active:scale-[0.98] ${
-                      qty ? 'border-basilico-600 bg-basilico-50' : 'border-crema-300 bg-white'
+                      qty ? 'border-basilico-600 bg-basilico-50' : m.category === COMBO_CATEGORY ? 'border-oro-400 bg-oro-100' : 'border-crema-300 bg-white'
                     }`}
                   >
                     <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-base font-bold ${qty ? 'bg-basilico-700 text-white' : 'bg-crema-200 text-seppia'}`}>
@@ -93,6 +154,7 @@ function MenuPicker({ table, lines }) {
           </section>
         ))}
       </div>
+      {combo && <ComboPicker combo={combo} table={table} onClose={() => setCombo(null)} />}
     </>
   );
 }
@@ -143,6 +205,7 @@ function CartSheet({ open, onClose, table, lines, onSend, sending }) {
             <div className="flex items-center gap-2">
               <div className="min-w-0 flex-1">
                 <p className="leading-tight font-semibold">{l.name}</p>
+                <ComboParts components={l.components} />
                 <p className="text-sm text-seppia tabular-nums">
                   {money(l.priceCents)} · subtotal {money(l.priceCents * l.qty)}
                 </p>

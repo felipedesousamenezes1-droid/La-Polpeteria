@@ -1,8 +1,19 @@
 // Constantes compartilhadas entre servidor e cliente.
 
-export const RESTAURANT_NAME = 'La Pulpeteria';
+export const RESTAURANT_NAME = 'La Polpeteria';
 
-export const CATEGORIES = ['Antipasti', 'Massas', 'Pizzas', 'Carnes', 'Sobremesas', 'Bebidas'];
+// "Menu Completo": item composto (entrada + prato principal + sobremesa) com preço próprio.
+export const COMBO_CATEGORY = 'Menu Completo';
+
+export const CATEGORIES = [COMBO_CATEGORY, 'Antipasti', 'Massas', 'Pizzas', 'Carnes', 'Sobremesas', 'Bebidas'];
+
+// Etapas do Menu Completo. As opções de cada etapa são os itens ativos marcados
+// como "faz parte do Menu Completo" nas categorias indicadas.
+export const COMBO_STEPS = [
+  { key: 'entrada', label: 'Entrada', categories: ['Antipasti'] },
+  { key: 'principal', label: 'Prato principal', categories: ['Massas', 'Pizzas', 'Carnes'] },
+  { key: 'sobremesa', label: 'Sobremesa', categories: ['Sobremesas'] },
+];
 
 export const ROLES = ['garcom', 'cozinha', 'caixa', 'admin'];
 
@@ -39,6 +50,7 @@ export const TAB_STATUS_LABELS = {
 
 // Atalhos de observação rápida exibidos ao garçom.
 export const QUICK_NOTES = {
+  [COMBO_CATEGORY]: ['servir a sobremesa depois', 'entrada já', 'sem gorgonzola'],
   geral: ['sem cebola', 'sem alho', 'sem queijo', 'sem glúten', 'sem lactose', 'pouco sal', 'molho à parte', 'para viagem'],
   Antipasti: ['sem pão', 'porção extra de pão'],
   Massas: ['al dente', 'bem cozida', 'sem pimenta', 'parmesão à parte'],

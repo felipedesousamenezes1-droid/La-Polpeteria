@@ -1,6 +1,6 @@
 // Armazenamento durável da fila de pedidos no aparelho: IndexedDB (com fallback para localStorage).
 
-const DB_NAME = 'la-pulpeteria';
+const DB_NAME = 'la-polpeteria';
 const STORE = 'outbox';
 
 function openDb() {
@@ -27,7 +27,7 @@ function run(db, mode, fn) {
 }
 
 function localStorageAdapter() {
-  const KEY = 'pulpeteria.outbox';
+  const KEY = 'polpeteria.outbox';
   const read = () => {
     try {
       return JSON.parse(localStorage.getItem(KEY) || '{}');

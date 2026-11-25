@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import Database from 'better-sqlite3';
-import { startServer, tmpDataDir, login, newOrder, ROOT } from './helpers.js';
+import { startServer, tmpDataDir, login, newOrder, ROOT, ID, PRICE } from './helpers.js';
 
 const servers = [];
 after(async () => {
@@ -19,8 +19,8 @@ describe('Backup e recuperação', () => {
     servers.push(srv);
     const garcom = await login(srv.base, 'garcom');
     const admin = await login(srv.base, 'admin');
-    await garcom.post('/api/orders', newOrder(1, [[6, 2]]));
-    await garcom.post('/api/orders', newOrder(2, [[12, 1]]));
+    await garcom.post('/api/orders', newOrder(1, [[ID.risotto, 2]]));
+    await garcom.post('/api/orders', newOrder(2, [[ID.trapanese, 1]]));
 
     for (let i = 0; i < 4; i++) assert.equal((await admin.post('/api/admin/backups')).status, 201);
     const list = (await admin.get('/api/admin/backups')).data;
@@ -40,13 +40,13 @@ describe('Backup e recuperação', () => {
     const srv = await startServer({ dataDir });
     const garcom = await login(srv.base, 'garcom');
     const admin = await login(srv.base, 'admin');
-    const o = (await garcom.post('/api/orders', newOrder(3, [[20, 2]]))).data.order;
+    const o = (await garcom.post('/api/orders', newOrder(3, [[ID.tiramisu, 2]]))).data.order;
     const { name } = (await admin.post('/api/admin/backups')).data;
     await srv.stop();
 
     // Simula perda do banco principal e restauração do backup (procedimento do README).
     const restoreDir = tmpDataDir('restore-target');
-    fs.copyFileSync(path.join(dataDir, 'backups', name), path.join(restoreDir, 'pulpeteria.db'));
+    fs.copyFileSync(path.join(dataDir, 'backups', name), path.join(restoreDir, 'polpeteria.db'));
     const restored = await startServer({ dataDir: restoreDir });
     servers.push(restored);
     const admin2 = await login(restored.base, 'admin');
@@ -61,7 +61,7 @@ describe('Backup e recuperação', () => {
     servers.push(srv);
     const garcom = await login(srv.base, 'garcom');
     const admin = await login(srv.base, 'admin');
-    const o = (await garcom.post('/api/orders', newOrder(4, [[6, 2, 'sem queijo; "extra"'], [24, 1]]))).data.order;
+    const o = (await garcom.post('/api/orders', newOrder(4, [[ID.risotto, 2, 'sem queijo; "extra"'], [ID.refri, 1]]))).data.order;
     await garcom.post(`/api/items/${o.items[1].id}/cancel`, { cancellationId: crypto.randomUUID(), qty: 1, reason: 'Cliente desistiu' });
 
     const csvRes = await fetch(`${srv.base}/api/admin/export?format=csv`, { headers: { Authorization: `Bearer ${admin.token}` } });
@@ -76,7 +76,7 @@ describe('Backup e recuperação', () => {
 
     const json = await (await fetch(`${srv.base}/api/admin/export?format=json`, { headers: { Authorization: `Bearer ${admin.token}` } })).json();
     assert.equal(json.pedidos.length, 1);
-    assert.equal(json.contas[0].conta.totalCents, 2 * 6200);
+    assert.equal(json.contas[0].conta.totalCents, 2 * PRICE.risotto);
     assert.equal(json.cancelamentos.length, 1);
     assert.ok(json.auditoria.some((e) => e.action === 'item.cancel'));
   });

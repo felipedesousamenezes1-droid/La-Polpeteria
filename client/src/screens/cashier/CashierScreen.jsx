@@ -2,15 +2,18 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ROLE_LABELS, TAB_STATUS_LABELS } from '../../../../shared/constants.js';
 import { useAppState, actions, toast, ApiError } from '../../lib/store.js';
 import { money, time, dateTime, splitCents } from '../../lib/util.js';
-import { ConfirmDialog, EmptyState, Icon, Modal, PinPad, QtyStepper } from '../../components/ui.jsx';
+import { ConfirmDialog, EmptyState, Icon, Modal, PinPad, QtyStepper, ComboParts } from '../../components/ui.jsx';
 import { CancelDialog } from '../waiter/TabOrders.jsx';
 
 function billText(bill, split) {
   const lines = [
-    'La Pulpeteria',
+    'La Polpeteria',
     `Mesa ${bill.tab.tableNumber} — ${new Date().toLocaleString('pt-BR')}`,
     '',
-    ...bill.lines.map((l) => `${l.qty}x ${l.name}${l.notes ? ` (${l.notes})` : ''}  ${money(l.subtotalCents)}`),
+    ...bill.lines.flatMap((l) => [
+      `${l.qty}x ${l.name}${l.notes ? ` (${l.notes})` : ''}  ${money(l.subtotalCents)}`,
+      ...(l.components || []).map((c) => `   ${c.step}: ${c.name}`),
+    ]),
     '',
     `TOTAL: ${money(bill.totalCents)}`,
   ];
@@ -184,6 +187,7 @@ function BillView({ tabId, onClosed }) {
                   </td>
                   <td className="px-3 py-2">
                     <span className="font-semibold">{l.name}</span>
+                    <ComboParts components={l.components} className="text-xs" />
                     {l.notes && <span className="block text-xs font-semibold text-pomodoro-700">Obs.: {l.notes}</span>}
                   </td>
                   <td className="px-3 py-2 text-right font-semibold tabular-nums">{l.qty}</td>

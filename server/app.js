@@ -53,7 +53,7 @@ function loginLimiter({ max = 10, windowMs = 5 * 60_000 } = {}) {
 
 export async function createApp(config = loadConfig(), { logger = console } = {}) {
   fs.mkdirSync(config.dataDir, { recursive: true });
-  const db = openDatabase(path.join(config.dataDir, 'pulpeteria.db'));
+  const db = openDatabase(path.join(config.dataDir, 'polpeteria.db'));
   const audit = createAudit(db);
   seedIfEmpty(db, audit);
   const auth = createAuth({ db, audit });
@@ -192,7 +192,7 @@ export async function createApp(config = loadConfig(), { logger = console } = {}
     const format = req.query.format === 'csv' ? 'csv' : 'json';
     const { csv, json } = buildDayExport({ services, audit }, date);
     db.transaction(() => audit.log(req.actor, 'export.download', 'day', date, { formato: format }))();
-    res.set('Content-Disposition', `attachment; filename="la-pulpeteria_${date}.${format}"`);
+    res.set('Content-Disposition', `attachment; filename="la-polpeteria_${date}.${format}"`);
     res.type(format === 'csv' ? 'text/csv; charset=utf-8' : 'application/json; charset=utf-8');
     res.send(format === 'csv' ? csv : json);
   });

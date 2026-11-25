@@ -3,14 +3,14 @@ import { ROLE_LABELS } from '../../../shared/constants.js';
 import { useAppState, logout, setScreen, outboxActions } from '../lib/store.js';
 import { Icon, ConfirmDialog } from './ui.jsx';
 
+/** Logotipo textual no estilo da marca: "LA" pequeno sobre "POLPETERIA" em serifa. */
 export function Logo({ size = 'md' }) {
   const big = size === 'lg';
   return (
-    <div className="flex flex-col leading-none">
-      <span className={`font-serif font-bold whitespace-nowrap italic text-basilico-800 ${big ? 'text-5xl' : 'text-xl sm:text-2xl'}`}>La Pulpeteria</span>
-      <span className={`mt-1 font-semibold whitespace-nowrap text-oro-600 uppercase ${big ? 'text-sm tracking-[0.35em]' : 'text-[8px] tracking-[0.18em] sm:text-[10px] sm:tracking-[0.35em]'}`}>
-        trattoria · cucina italiana
-      </span>
+    <div className="flex flex-col items-center leading-none text-basilico-700" aria-label="La Polpeteria">
+      <span className={`font-serif font-bold tracking-[0.2em] ${big ? 'text-lg' : 'text-[10px]'}`}>LA</span>
+      <span className={`font-serif font-bold whitespace-nowrap uppercase ${big ? 'text-5xl tracking-wide' : 'text-xl tracking-wide sm:text-2xl'}`}>Polpeteria</span>
+      {big && <span className="mt-2 text-sm font-semibold tracking-[0.35em] text-oro-600 uppercase">cucina italiana</span>}
     </div>
   );
 }
@@ -117,9 +117,9 @@ export function Toasts() {
     info: 'bg-inchiostro text-crema-50',
   };
   return (
-    <div className="pointer-events-none fixed inset-x-0 top-[4.5rem] z-[60] flex flex-col items-center gap-2 px-3 print:hidden" aria-live="polite">
+    <div className="pointer-events-none fixed inset-x-0 bottom-[calc(9.5rem+env(safe-area-inset-bottom))] z-[60] flex flex-col items-center gap-2 px-3 print:hidden" aria-live="polite">
       {s.toasts.map((t) => (
-        <div key={t.id} className={`pointer-events-auto max-w-lg rounded-2xl px-4 py-3 text-base font-semibold shadow-lg ${tones[t.kind] || tones.info}`}>
+        <div key={t.id} className={`max-w-lg rounded-2xl px-4 py-2.5 text-center text-base font-semibold shadow-lg ${tones[t.kind] || tones.info}`}>
           {t.message}
         </div>
       ))}

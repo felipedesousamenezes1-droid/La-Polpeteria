@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useAppState, actions, on, toast } from '../../lib/store.js';
 import { playNewOrder, unlockAudio, audioReady } from '../../lib/sound.js';
 import { elapsed, time } from '../../lib/util.js';
-import { Icon, useNow } from '../../components/ui.jsx';
+import { Icon, useNow, ComboParts } from '../../components/ui.jsx';
 
 const COLUMNS = [
   { key: 'novo', title: 'Novo', head: 'bg-pomodoro-600 text-white', action: 'Iniciar preparo', next: 'preparando' },
@@ -80,6 +80,7 @@ function OrderCard({ order, column, serverNow, settings, flash }) {
               <p className={`text-2xl leading-snug ${i.activeQty === 0 ? 'text-seppia line-through' : ''}`}>
                 <span className="font-bold">{i.activeQty || i.qty}×</span> {i.name}
               </p>
+              {i.activeQty > 0 && <ComboParts components={i.components} className="ml-8 text-xl leading-snug" />}
               {i.notes && i.activeQty > 0 && <p className="mt-1 inline-block rounded-lg bg-pomodoro-600 px-3 py-1 text-xl font-bold text-white uppercase">
                   <Icon name="alert" className="mr-1 -mt-1 inline h-5 w-5" />
                   {i.notes}

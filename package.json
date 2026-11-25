@@ -1,8 +1,8 @@
 {
-  "name": "la-pulpeteria",
+  "name": "la-polpeteria",
   "version": "1.0.0",
   "private": true,
-  "description": "Sistema de pedidos em tempo real para o restaurante La Pulpeteria (PWA + Node.js + SQLite + Socket.IO).",
+  "description": "Sistema de pedidos em tempo real para o restaurante La Polpeteria (PWA + Node.js + SQLite + Socket.IO).",
   "type": "module",
   "engines": {
     "node": ">=20"

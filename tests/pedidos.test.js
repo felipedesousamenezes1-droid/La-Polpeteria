@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { io } from 'socket.io-client';
-import { startServer, tmpDataDir, login, newOrder } from './helpers.js';
+import { startServer, tmpDataDir, login, newOrder, ID, PRICE } from './helpers.js';
 
 let srv;
 let dataDir;
@@ -28,21 +28,21 @@ after(() => srv?.stop());
 describe('Criação de pedidos', () => {
   test('cria o pedido, grava no banco antes de responder e congela nome e preço', { timeout: 30_000 }, async () => {
     const menu = (await garcom.get('/api/state')).data.menu;
-    const carbonara = menu.find((m) => m.name === 'Spaghetti alla Carbonara');
-    const order = newOrder(3, [[carbonara.id, 2, 'sem pimenta']]);
+    const risotto = menu.find((m) => m.id === ID.risotto);
+    const order = newOrder(3, [[risotto.id, 2, 'sem pimenta']]);
     const r = await garcom.post('/api/orders', order);
     assert.equal(r.status, 201);
     assert.equal(r.data.duplicate, false);
     assert.equal(r.data.order.id, order.id);
     assert.equal(r.data.order.status, 'novo');
-    assert.equal(r.data.order.items[0].unitPriceCents, carbonara.priceCents);
-    assert.equal(r.data.order.items[0].name, 'Spaghetti alla Carbonara');
+    assert.equal(r.data.order.items[0].unitPriceCents, risotto.priceCents);
+    assert.equal(r.data.order.items[0].name, 'Risotto alla Pera e Gorgonzola con Polpette al Vino Rosso');
     assert.equal(r.data.order.items[0].notes, 'sem pimenta');
-    assert.equal(r.data.order.totalCents, carbonara.priceCents * 2);
+    assert.equal(r.data.order.totalCents, risotto.priceCents * 2);
     assert.equal(r.data.order.createdBy.name, 'Marco');
 
     // Lido direto do arquivo do banco por outra conexão: já está gravado.
-    const db = new Database(path.join(dataDir, 'pulpeteria.db'), { readonly: true });
+    const db = new Database(path.join(dataDir, 'polpeteria.db'), { readonly: true });
     const row = db.prepare('SELECT * FROM orders WHERE id = ?').get(order.id);
     db.close();
     assert.ok(row, 'pedido deve estar no banco no momento da resposta');
@@ -54,17 +54,17 @@ describe('Criação de pedidos', () => {
 
   test('rejeita pedidos inválidos sem gravar nada', { timeout: 30_000 }, async () => {
     assert.equal((await garcom.post('/api/orders', newOrder(3, []))).status, 400);
-    assert.equal((await garcom.post('/api/orders', newOrder(999, [[1, 1]]))).status, 400);
+    assert.equal((await garcom.post('/api/orders', newOrder(999, [[ID.rotolini, 1]]))).status, 400);
     assert.equal((await garcom.post('/api/orders', newOrder(3, [[9999, 1]]))).data.error, 'UNKNOWN_ITEM');
-    assert.equal((await garcom.post('/api/orders', newOrder(3, [[1, 0]]))).data.error, 'BAD_QTY');
-    assert.equal((await garcom.post('/api/orders', { ...newOrder(3, [[1, 1]]), id: 'nao-e-uuid' })).data.error, 'BAD_ID');
-    assert.equal((await cozinha.post('/api/orders', newOrder(3, [[1, 1]]))).status, 403, 'cozinha não lança pedidos');
+    assert.equal((await garcom.post('/api/orders', newOrder(3, [[ID.rotolini, 0]]))).data.error, 'BAD_QTY');
+    assert.equal((await garcom.post('/api/orders', { ...newOrder(3, [[ID.rotolini, 1]]), id: 'nao-e-uuid' })).data.error, 'BAD_ID');
+    assert.equal((await cozinha.post('/api/orders', newOrder(3, [[ID.rotolini, 1]]))).status, 403, 'cozinha não lança pedidos');
   });
 
   test('a cozinha recebe o novo pedido em tempo real em menos de 1 segundo', { timeout: 30_000 }, async () => {
     const socket = io(srv.base, { auth: { token: cozinha.token }, transports: ['websocket'] });
     await new Promise((r) => socket.on('connect', r));
-    const order = newOrder(4, [[12, 1]]);
+    const order = newOrder(4, [[ID.trapanese, 1]]);
     const received = new Promise((resolve) => {
       socket.on('order:upsert', ({ data }) => {
         if (data.id === order.id) resolve(performance.now());
@@ -81,7 +81,7 @@ describe('Criação de pedidos', () => {
 
 describe('Mudança de status', () => {
   test('Novo → Preparando → Pronto → Retirado, com controle de concorrência', { timeout: 30_000 }, async () => {
-    const order = (await garcom.post('/api/orders', newOrder(5, [[13, 1]]))).data.order;
+    const order = (await garcom.post('/api/orders', newOrder(5, [[ID.ortolana, 1]]))).data.order;
     const move = (dev, from, to) => dev.post(`/api/orders/${order.id}/status`, { from, to });
 
     assert.equal((await move(garcom, 'novo', 'preparando')).status, 403, 'garçom não altera preparo');
@@ -107,7 +107,7 @@ describe('Mudança de status', () => {
   });
 
   test('evento "pronto" chega aos garçons', { timeout: 30_000 }, async () => {
-    const order = (await garcom.post('/api/orders', newOrder(6, [[20, 2]]))).data.order;
+    const order = (await garcom.post('/api/orders', newOrder(6, [[ID.tiramisu, 2]]))).data.order;
     const socket = io(srv.base, { auth: { token: garcom.token }, transports: ['websocket'] });
     await new Promise((r) => socket.on('connect', r));
     const ready = new Promise((resolve) => socket.on('order:upsert', ({ data }) => data.id === order.id && data.status === 'pronto' && resolve(data)));
@@ -121,7 +121,7 @@ describe('Mudança de status', () => {
 
 describe('Cancelamentos e imutabilidade', () => {
   test('cozinha não pode cancelar; cancelamento exige motivo e não apaga o item', { timeout: 30_000 }, async () => {
-    const order = (await garcom.post('/api/orders', newOrder(8, [[6, 3]]))).data.order;
+    const order = (await garcom.post('/api/orders', newOrder(8, [[ID.risotto, 3]]))).data.order;
     const itemId = order.items[0].id;
     const k = await cozinha.post(`/api/items/${itemId}/cancel`, { cancellationId: crypto.randomUUID(), qty: 1, reason: 'teste' });
     assert.equal(k.status, 403);
@@ -142,7 +142,7 @@ describe('Cancelamentos e imutabilidade', () => {
   });
 
   test('o próprio banco recusa apagar/alterar pedidos, itens, cancelamentos e auditoria', { timeout: 30_000 }, () => {
-    const db = new Database(path.join(dataDir, 'pulpeteria.db'));
+    const db = new Database(path.join(dataDir, 'polpeteria.db'));
     const attempts = [
       'DELETE FROM orders',
       'DELETE FROM order_items',
@@ -169,22 +169,58 @@ describe('Cancelamentos e imutabilidade', () => {
   });
 
   test('preço congelado: mudar o cardápio não altera contas abertas', { timeout: 30_000 }, async () => {
-    const order = (await garcom.post('/api/orders', newOrder(9, [[15, 2]]))).data.order;
+    const order = (await garcom.post('/api/orders', newOrder(9, [[ID.trapanese, 2]]))).data.order;
     const before = order.items[0].unitPriceCents;
-    const up = await admin.put('/api/admin/menu/15', { priceCents: before + 5000 });
+    const up = await admin.put(`/api/admin/menu/${ID.trapanese}`, { priceCents: before + 5000 });
     assert.equal(up.data.priceCents, before + 5000);
     const bill = (await caixa.get(`/api/tabs/${order.tabId}/bill`)).data;
     assert.equal(bill.lines[0].unitPriceCents, before);
     assert.equal(bill.totalCents, before * 2);
-    const novo = (await garcom.post('/api/orders', newOrder(9, [[15, 1]]))).data.order;
+    const novo = (await garcom.post('/api/orders', newOrder(9, [[ID.trapanese, 1]]))).data.order;
     assert.equal(novo.items[0].unitPriceCents, before + 5000, 'pedido novo usa o preço novo');
-    await admin.put('/api/admin/menu/15', { priceCents: before });
+    await admin.put(`/api/admin/menu/${ID.trapanese}`, { priceCents: before });
   });
 
-  test('item desativado some do cardápio do garçom, mas continua nas contas', { timeout: 30_000 }, async () => {
-    await admin.put('/api/admin/menu/1', { active: false });
+  test('item desativado fica indisponível para o garçom', { timeout: 30_000 }, async () => {
+    await admin.put(`/api/admin/menu/${ID.limonata}`, { active: false });
     const menu = (await garcom.get('/api/state')).data.menu;
-    assert.equal(menu.find((m) => m.id === 1).active, false);
-    await admin.put('/api/admin/menu/1', { active: true });
+    assert.equal(menu.find((m) => m.id === ID.limonata).active, false);
+    await admin.put(`/api/admin/menu/${ID.limonata}`, { active: true });
+  });
+});
+
+describe('Menu Completo (entrada + prato principal + sobremesa)', () => {
+  test('cobra o preço do menu, congela as escolhas e mostra tudo à cozinha e ao caixa', { timeout: 30_000 }, async () => {
+    const r = await garcom.post('/api/orders', newOrder(11, [[ID.combo, 2, 'servir a sobremesa depois', [ID.rotolini, ID.risotto, ID.tiramisu]]]));
+    assert.equal(r.status, 201, JSON.stringify(r.data));
+    const item = r.data.order.items[0];
+    assert.equal(item.unitPriceCents, PRICE.combo);
+    assert.equal(PRICE.combo, 13000, 'R$ 130,00 como no cardápio');
+    assert.deepEqual(
+      item.components.map((c) => [c.step, c.name]),
+      [
+        ['Entrada', 'Rotolini di Zucchine'],
+        ['Prato principal', 'Risotto alla Pera e Gorgonzola con Polpette al Vino Rosso'],
+        ['Sobremesa', 'Tiramisu'],
+      ],
+    );
+    const kitchen = (await cozinha.get('/api/state')).data.orders.find((o) => o.id === r.data.order.id);
+    assert.equal(kitchen.items[0].components.length, 3);
+    const bill = (await caixa.get(`/api/tabs/${r.data.order.tabId}/bill`)).data;
+    assert.equal(bill.totalCents, 2 * 13000, 'dois menus completos = R$ 260,00 (e não a soma avulsa)');
+    assert.equal(bill.lines[0].components[2].name, 'Tiramisu');
+  });
+
+  test('recusa Menu Completo sem as três escolhas ou com escolha da etapa errada', { timeout: 30_000 }, async () => {
+    const bad = [
+      [[ID.combo, 1]],
+      [[ID.combo, 1, '', [ID.rotolini, ID.risotto]]],
+      [[ID.combo, 1, '', [ID.rotolini, ID.tiramisu, ID.risotto]]],
+      [[ID.risotto, 1, '', [ID.rotolini]]],
+    ];
+    for (const items of bad) {
+      const r = await garcom.post('/api/orders', newOrder(12, items));
+      assert.equal(r.data.error, 'BAD_COMBO', JSON.stringify(items));
+    }
   });
 });

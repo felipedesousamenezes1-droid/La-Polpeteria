@@ -1,7 +1,7 @@
 {
-  "name": "La Pulpeteria — Pedidos",
-  "short_name": "Pulpeteria",
-  "description": "Sistema de pedidos da La Pulpeteria",
+  "name": "La Polpeteria — Pedidos",
+  "short_name": "Polpeteria",
+  "description": "Sistema de pedidos da La Polpeteria",
   "lang": "pt-BR",
   "start_url": "/",
   "scope": "/",

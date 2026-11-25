@@ -27,7 +27,7 @@ const addrs = Object.values(os.networkInterfaces())
   .filter((a) => a && a.family === 'IPv4' && !a.internal)
   .map((a) => `${proto}://${a.address}:${port}`);
 
-console.log('\n  La Pulpeteria — sistema de pedidos');
+console.log('\n  La Polpeteria — sistema de pedidos');
 console.log(`  Dados em: ${config.dataDir}`);
 console.log(`  Neste computador:   ${proto}://localhost:${port}`);
 for (const a of addrs) console.log(`  Na rede (Wi-Fi):    ${a}`);

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { CATEGORIES, LIMITS, ORDER_FLOW } from '../shared/constants.js';
+import { CATEGORIES, LIMITS, ORDER_FLOW, COMBO_CATEGORY, COMBO_STEPS } from '../shared/constants.js';
 import { HttpError, nowIso, localDate, localDayRange, sha256, UUID_RE, cleanText, isInt } from './util.js';
 
 /**
@@ -15,10 +15,10 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     menuAll: db.prepare('SELECT * FROM menu_items ORDER BY sort, id'),
     menuById: db.prepare('SELECT * FROM menu_items WHERE id = ?'),
     menuMaxSort: db.prepare('SELECT COALESCE(MAX(sort), 0) FROM menu_items').pluck(),
-    insertMenu: db.prepare(`INSERT INTO menu_items (name, description, category, price_cents, active, sort, created_at, updated_at)
-      VALUES (@name, @description, @category, @price_cents, @active, @sort, @now, @now)`),
+    insertMenu: db.prepare(`INSERT INTO menu_items (name, description, category, price_cents, active, in_combo, sort, created_at, updated_at)
+      VALUES (@name, @description, @category, @price_cents, @active, @in_combo, @sort, @now, @now)`),
     updateMenu: db.prepare(`UPDATE menu_items SET name = @name, description = @description, category = @category,
-      price_cents = @price_cents, active = @active, updated_at = @now WHERE id = @id`),
+      price_cents = @price_cents, active = @active, in_combo = @in_combo, updated_at = @now WHERE id = @id`),
     tabById: db.prepare('SELECT * FROM tabs WHERE id = ?'),
     activeTabForTable: db.prepare("SELECT * FROM tabs WHERE table_number = ? AND status <> 'closed'"),
     maxActiveTable: db.prepare("SELECT COALESCE(MAX(table_number), 0) FROM tabs WHERE status <> 'closed'").pluck(),
@@ -41,8 +41,8 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       created_by_name, device_id, client_created_at, received_at, status_changed_at, payload_hash)
       VALUES (@id, @tab_id, @table_number, @seq, @business_date, 'novo', @created_by_role, @created_by_name, @device_id,
       @client_created_at, @received_at, @received_at, @payload_hash)`),
-    insertItem: db.prepare(`INSERT INTO order_items (id, order_id, line_no, menu_item_id, name, category, unit_price_cents, qty, notes, created_at)
-      VALUES (@id, @order_id, @line_no, @menu_item_id, @name, @category, @unit_price_cents, @qty, @notes, @created_at)`),
+    insertItem: db.prepare(`INSERT INTO order_items (id, order_id, line_no, menu_item_id, name, category, unit_price_cents, qty, notes, components, created_at)
+      VALUES (@id, @order_id, @line_no, @menu_item_id, @name, @category, @unit_price_cents, @qty, @notes, @components, @created_at)`),
     setOrderStatus: db.prepare('UPDATE orders SET status = ?, status_changed_at = ? WHERE id = ? AND status = ?'),
     itemById: db.prepare('SELECT * FROM order_items WHERE id = ?'),
     cancelledQty: db.prepare('SELECT COALESCE(SUM(qty), 0) FROM cancellations WHERE order_item_id = ?').pluck(),
@@ -68,6 +68,7 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     category: m.category,
     priceCents: m.price_cents,
     active: !!m.active,
+    inCombo: !!m.in_combo,
     sort: m.sort,
   });
 
@@ -139,6 +140,7 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
         cancelledQty,
         activeQty: i.qty - cancelledQty,
         notes: i.notes,
+        components: JSON.parse(i.components || '[]'),
         createdAt: i.created_at,
         cancellations: cl,
       });
@@ -204,14 +206,36 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       const qty = Number(it?.qty);
       if (!Number.isInteger(menuItemId)) throw new HttpError(400, 'BAD_ITEM', 'Item inválido.');
       if (!isInt(qty, 1, LIMITS.maxQty)) throw new HttpError(400, 'BAD_QTY', `Quantidade deve estar entre 1 e ${LIMITS.maxQty}.`);
-      return { menuItemId, qty, notes: cleanText(it?.notes, LIMITS.maxNotes) };
+      const components = it?.components == null ? [] : it.components;
+      if (!Array.isArray(components) || components.length > COMBO_STEPS.length || !components.every((c) => Number.isInteger(c))) {
+        throw new HttpError(400, 'BAD_COMBO', 'Escolhas do Menu Completo inválidas.');
+      }
+      return { menuItemId, qty, notes: cleanText(it?.notes, LIMITS.maxNotes), components };
     });
     const clientCreatedAt = input.clientCreatedAt ? cleanText(input.clientCreatedAt, 40) : null;
     return { id, tableNumber, tabId, items, clientCreatedAt };
   }
 
+  /** Menu Completo: exige uma escolha válida por etapa e congela os nomes escolhidos. */
+  function resolveComponents(menuRow, ids) {
+    if (menuRow.category !== COMBO_CATEGORY) {
+      if (ids.length) throw new HttpError(400, 'BAD_COMBO', `"${menuRow.name}" não é um Menu Completo.`);
+      return [];
+    }
+    if (ids.length !== COMBO_STEPS.length) {
+      throw new HttpError(400, 'BAD_COMBO', 'Escolha entrada, prato principal e sobremesa do Menu Completo.');
+    }
+    return COMBO_STEPS.map((step, i) => {
+      const c = q.menuById.get(ids[i]);
+      if (!c || !step.categories.includes(c.category)) {
+        throw new HttpError(400, 'BAD_COMBO', `Escolha inválida para "${step.label}" no Menu Completo.`);
+      }
+      return { step: step.label, menuItemId: c.id, name: c.name };
+    });
+  }
+
   const createOrderTx = db.transaction((actor, v) => {
-    const payloadHash = sha256(JSON.stringify([v.tableNumber, v.tabId, v.items.map((i) => [i.menuItemId, i.qty, i.notes])]));
+    const payloadHash = sha256(JSON.stringify([v.tableNumber, v.tabId, v.items.map((i) => [i.menuItemId, i.qty, i.notes, i.components])]));
 
     // Idempotência: o mesmo UUID nunca gera um segundo pedido.
     const existing = q.orderById.get(v.id);
@@ -231,6 +255,7 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       if (!m) throw new HttpError(400, 'UNKNOWN_ITEM', 'Um dos itens não existe no cardápio.');
       return m;
     });
+    const componentsByLine = v.items.map((i, idx) => resolveComponents(menuRows[idx], i.components));
 
     const now = nowIso();
     let tab;
@@ -293,6 +318,7 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
         unit_price_cents: m.price_cents, // preço congelado no momento do pedido
         qty: it.qty,
         notes: it.notes,
+        components: JSON.stringify(componentsByLine[idx]),
         created_at: now,
       });
     });
@@ -300,7 +326,13 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       seq,
       mesa: v.tableNumber,
       conta: tab.id,
-      itens: v.items.map((it, idx) => ({ item: menuRows[idx].name, qtd: it.qty, precoCentavos: menuRows[idx].price_cents, obs: it.notes || undefined })),
+      itens: v.items.map((it, idx) => ({
+        item: menuRows[idx].name,
+        qtd: it.qty,
+        precoCentavos: menuRows[idx].price_cents,
+        obs: it.notes || undefined,
+        escolhas: componentsByLine[idx].length ? componentsByLine[idx].map((c) => c.name) : undefined,
+      })),
       totalCentavos: total,
     });
     return { duplicate: false, orderId: v.id };
@@ -429,6 +461,7 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
             name: i.name,
             category: i.category,
             notes: i.notes,
+            components: i.components,
             qty: i.activeQty,
             unitPriceCents: i.unitPriceCents,
             subtotalCents: i.activeQty * i.unitPriceCents,
@@ -443,6 +476,7 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
             itemId: i.id,
             name: i.name,
             notes: i.notes,
+            components: i.components,
             qty: c.qty,
             unitPriceCents: i.unitPriceCents,
             valueCents: c.qty * i.unitPriceCents,
@@ -529,10 +563,11 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     const category = input.category ?? current?.category;
     const priceCents = input.priceCents ?? current?.price_cents;
     const active = input.active ?? (current ? !!current.active : true);
+    const inCombo = input.inCombo ?? (current ? !!current.in_combo : false);
     if (name.length < 2) throw new HttpError(400, 'BAD_NAME', 'Informe o nome do item.');
     if (!CATEGORIES.includes(category)) throw new HttpError(400, 'BAD_CATEGORY', 'Categoria inválida.');
     if (!isInt(priceCents, 0, 10_000_000)) throw new HttpError(400, 'BAD_PRICE', 'Preço inválido.');
-    return { name, description, category, price_cents: priceCents, active: active ? 1 : 0 };
+    return { name, description, category, price_cents: priceCents, active: active ? 1 : 0, in_combo: inCombo && category !== COMBO_CATEGORY ? 1 : 0 };
   }
 
   function createMenuItem(actor, input) {
@@ -552,7 +587,7 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       if (!current) throw new HttpError(404, 'NOT_FOUND', 'Item não encontrado.');
       const v = validateMenuInput(input || {}, current);
       q.updateMenu.run({ ...v, id, now: nowIso() });
-      const before = { name: current.name, description: current.description, category: current.category, price_cents: current.price_cents, active: current.active };
+      const before = { name: current.name, description: current.description, category: current.category, price_cents: current.price_cents, active: current.active, in_combo: current.in_combo };
       const changes = Object.fromEntries(Object.keys(v).filter((k) => v[k] !== before[k]).map((k) => [k, { de: before[k], para: v[k] }]));
       audit.log(actor, 'menu.update', 'menu_item', id, { item: current.name, alteracoes: changes });
     })();

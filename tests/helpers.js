@@ -5,12 +5,39 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { SAMPLE_MENU } from '../server/seed.js';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const PINS = { garcom: '1111', cozinha: '2222', admin: '3333', caixa: '4444' };
 
+// Itens do cardápio inicial (ids na ordem da semente, banco novo começa em 1).
+const NAMES = {
+  combo: 'Menu Completo',
+  rotolini: 'Rotolini di Zucchine',
+  risotto: 'Risotto alla Pera e Gorgonzola con Polpette al Vino Rosso',
+  trapanese: 'Pasta al Pesto alla Trapanese con Polpette al Balsamico',
+  ortolana: "Pasta all'Ortolana con Polpette al Sugo",
+  tiramisu: 'Tiramisu',
+  cheesecake: 'Cheesecake alla Ricotta con Composta di Pomodorini',
+  agua: 'Água mineral 500 ml',
+  refri: 'Refrigerante lata',
+  limonata: 'Limonata della Casa',
+  chianti: 'Taça de Chianti',
+  espresso: 'Espresso',
+};
+export const ID = {};
+export const PRICE = {};
+for (const [key, name] of Object.entries(NAMES)) {
+  const idx = SAMPLE_MENU.findIndex((m) => m.name === name);
+  if (idx < 0) throw new Error(`item ausente na semente: ${name}`);
+  ID[key] = idx + 1;
+  PRICE[key] = SAMPLE_MENU[idx].price;
+}
+/** Todos os itens simples (não compostos), ativos ou não. */
+export const SIMPLE_IDS = SAMPLE_MENU.map((m, i) => (m.category === 'Menu Completo' ? null : i + 1)).filter(Boolean);
+
 export function tmpDataDir(name) {
-  return fs.mkdtempSync(path.join(process.env.TEST_TMPDIR || os.tmpdir(), `pulpeteria-${name}-`));
+  return fs.mkdtempSync(path.join(process.env.TEST_TMPDIR || os.tmpdir(), `polpeteria-${name}-`));
 }
 
 export function freePort() {
@@ -120,7 +147,7 @@ export function newOrder(tableNumber, items, extra = {}) {
     id: randomUUID(),
     tableNumber,
     clientCreatedAt: new Date().toISOString(),
-    items: items.map(([menuItemId, qty, notes = '']) => ({ menuItemId, qty, notes })),
+    items: items.map(([menuItemId, qty, notes = '', components]) => ({ menuItemId, qty, notes, ...(components ? { components } : {}) })),
     ...extra,
   };
 }

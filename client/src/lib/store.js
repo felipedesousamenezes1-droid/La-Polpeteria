@@ -5,12 +5,12 @@ import { createDeviceStorage } from './outbox-storage.js';
 import { uuid } from './util.js';
 import { playAlert } from './sound.js';
 
-const SESSION_KEY = 'pulpeteria.session';
-const DEVICE_KEY = 'pulpeteria.deviceId';
-const DRAFTS_KEY = 'pulpeteria.drafts';
-const SCREEN_KEY = 'pulpeteria.screen';
-const CACHE_KEY = 'pulpeteria.cache';
-export const NAME_KEY = 'pulpeteria.lastName';
+const SESSION_KEY = 'polpeteria.session';
+const DEVICE_KEY = 'polpeteria.deviceId';
+const DRAFTS_KEY = 'polpeteria.drafts';
+const SCREEN_KEY = 'polpeteria.screen';
+const CACHE_KEY = 'polpeteria.cache';
+export const NAME_KEY = 'polpeteria.lastName';
 
 function readJson(key, fallback) {
   try {
@@ -364,11 +364,13 @@ export function setDraft(table, lines) {
   set({ drafts });
 }
 
-export function addToDraft(table, item) {
+/** Adiciona 1 unidade. components: escolhas do Menu Completo [{ step, menuItemId, name }]. */
+export function addToDraft(table, item, components = []) {
   const lines = [...(state.drafts[table] || [])];
-  const idx = lines.findIndex((l) => l.menuItemId === item.id && !l.notes);
+  const sig = components.map((c) => c.menuItemId).join(',');
+  const idx = lines.findIndex((l) => l.menuItemId === item.id && !l.notes && (l.components || []).map((c) => c.menuItemId).join(',') === sig);
   if (idx >= 0) lines[idx] = { ...lines[idx], qty: Math.min(99, lines[idx].qty + 1) };
-  else lines.push({ key: uuid(), menuItemId: item.id, name: item.name, category: item.category, priceCents: item.priceCents, qty: 1, notes: '' });
+  else lines.push({ key: uuid(), menuItemId: item.id, name: item.name, category: item.category, priceCents: item.priceCents, qty: 1, notes: '', components });
   setDraft(table, lines);
 }
 
@@ -387,7 +389,15 @@ export async function submitDraft(table) {
     tabId: tab?.id ?? null,
     clientCreatedAt: new Date().toISOString(),
     createdByName: state.session?.name ?? null,
-    items: lines.map((l) => ({ menuItemId: l.menuItemId, qty: l.qty, notes: l.notes || '', name: l.name, priceCents: l.priceCents, category: l.category })),
+    items: lines.map((l) => ({
+      menuItemId: l.menuItemId,
+      qty: l.qty,
+      notes: l.notes || '',
+      components: l.components || [],
+      name: l.name,
+      priceCents: l.priceCents,
+      category: l.category,
+    })),
   });
   setDraft(table, []);
   return entry;

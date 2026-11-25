@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { CATEGORIES, ROLE_LABELS, ORDER_STATUS_LABELS, TAB_STATUS_LABELS } from '../../../../shared/constants.js';
+import { CATEGORIES, ROLE_LABELS, ORDER_STATUS_LABELS, TAB_STATUS_LABELS, COMBO_CATEGORY, COMBO_STEPS } from '../../../../shared/constants.js';
 import { useAppState, api, toast, getState } from '../../lib/store.js';
 import { money, time, dateTime, todayLocal } from '../../lib/util.js';
 import { EmptyState, Icon, Modal, QtyStepper, ConfirmDialog } from '../../components/ui.jsx';
@@ -34,7 +34,7 @@ async function download(path, filename) {
 
 function ExportButtons({ date }) {
   const run = (format) =>
-    download(`/api/admin/export?date=${date}&format=${format}`, `la-pulpeteria_${date}.${format}`).catch((e) => toast(e.message, 'error'));
+    download(`/api/admin/export?date=${date}&format=${format}`, `la-polpeteria_${date}.${format}`).catch((e) => toast(e.message, 'error'));
   return (
     <div className="flex flex-wrap gap-2">
       <button className="btn-primary" onClick={() => run('csv')} data-testid="exportar-csv">
@@ -56,6 +56,7 @@ function MenuItemForm({ item, onClose }) {
     category: item?.category || CATEGORIES[0],
     price: item ? (item.priceCents / 100).toFixed(2).replace('.', ',') : '',
     active: item ? item.active : true,
+    inCombo: item ? item.inCombo : false,
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -67,7 +68,7 @@ function MenuItemForm({ item, onClose }) {
     setBusy(true);
     setError('');
     try {
-      const body = { name: form.name, description: form.description, category: form.category, priceCents, active: form.active };
+      const body = { name: form.name, description: form.description, category: form.category, priceCents, active: form.active, inCombo: form.inCombo };
       if (item) await api(`/api/admin/menu/${item.id}`, { method: 'PUT', body });
       else await api('/api/admin/menu', { method: 'POST', body });
       toast('Cardápio atualizado', 'ok');
@@ -121,6 +122,17 @@ function MenuItemForm({ item, onClose }) {
         <label className="flex min-h-12 items-center gap-3 font-semibold">
           <input type="checkbox" className="h-6 w-6 accent-basilico-700" checked={form.active} onChange={set('active')} /> Disponível no cardápio
         </label>
+        {form.category === COMBO_CATEGORY ? (
+          <p className="rounded-xl bg-oro-100 p-3 text-sm">
+            Item composto: o garçom escolhe {COMBO_STEPS.map((s) => s.label.toLowerCase()).join(', ')} entre os pratos marcados como "faz parte do Menu Completo". O preço cobrado é o deste item.
+          </p>
+        ) : (
+          COMBO_STEPS.some((s) => s.categories.includes(form.category)) && (
+            <label className="flex min-h-12 items-center gap-3 font-semibold">
+              <input type="checkbox" className="h-6 w-6 accent-basilico-700" checked={form.inCombo} onChange={set('inCombo')} /> Faz parte do Menu Completo
+            </label>
+          )
+        )}
         {item && <p className="text-sm text-seppia">Mudanças de preço valem só para pedidos novos; contas já lançadas mantêm o preço do momento do pedido.</p>}
         {error && <p className="font-semibold text-pomodoro-700">{error}</p>}
       </div>
@@ -155,7 +167,10 @@ function MenuPanel() {
               .map((m) => (
                 <li key={m.id} className={`flex items-center gap-3 px-3 py-2 ${m.active ? '' : 'opacity-60'}`}>
                   <div className="min-w-0 flex-1">
-                    <p className="font-semibold">{m.name}</p>
+                    <p className="font-semibold">
+                      {m.name}
+                      {m.inCombo && <span className="ml-2 rounded-full bg-oro-200 px-2 py-0.5 text-xs font-bold text-oro-700">Menu Completo</span>}
+                    </p>
                     <p className="truncate text-sm text-seppia">{m.description}</p>
                   </div>
                   <span className="font-bold tabular-nums">{money(m.priceCents)}</span>
@@ -539,10 +554,10 @@ function BackupPanel() {
 }
 
 export default function AdminScreen() {
-  const [tab, setTab] = useState(() => localStorage.getItem('pulpeteria.adminTab') || 'menu');
+  const [tab, setTab] = useState(() => localStorage.getItem('polpeteria.adminTab') || 'menu');
   const select = (t) => {
     setTab(t);
-    localStorage.setItem('pulpeteria.adminTab', t);
+    localStorage.setItem('polpeteria.adminTab', t);
   };
   const panel = useMemo(() => ({ menu: <MenuPanel />, config: <ConfigPanel />, history: <HistoryPanel />, audit: <AuditPanel />, backup: <BackupPanel /> })[tab], [tab]);
   return (

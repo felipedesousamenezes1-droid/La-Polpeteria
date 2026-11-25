@@ -47,7 +47,7 @@ export function buildDayExport({ services, audit }, date) {
           new Date(o.receivedAt).toLocaleString('pt-BR'),
           `${ROLE_LABELS[o.createdBy.role] || o.createdBy.role}${o.createdBy.name ? ` (${o.createdBy.name})` : ''}`,
           i.category,
-          i.name,
+          i.components?.length ? `${i.name} (${i.components.map((c) => c.name).join(' + ')})` : i.name,
           i.notes,
           i.qty,
           i.cancelledQty,
@@ -68,7 +68,7 @@ export function buildDayExport({ services, audit }, date) {
 
   const json = JSON.stringify(
     {
-      restaurante: 'La Pulpeteria',
+      restaurante: 'La Polpeteria',
       data: date,
       geradoEm: nowIso(),
       resumo: h.summary,
@@ -122,7 +122,7 @@ export function createBackupManager({ db, audit, services, dataDir, keep = 50, i
 
   async function doBackup(reason) {
     const auditId = audit.lastId();
-    const name = `pulpeteria_${stamp()}_${reason}.sqlite`;
+    const name = `polpeteria_${stamp()}_${reason}.sqlite`;
     const tmp = path.join(backupDir, `${name}.tmp`);
     await db.backup(tmp);
     fs.renameSync(tmp, path.join(backupDir, name));

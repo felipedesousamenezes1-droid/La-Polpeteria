@@ -250,7 +250,12 @@ export function payloadOf(entry) {
     tableNumber: entry.tableNumber,
     tabId: entry.tabId ?? null,
     clientCreatedAt: entry.clientCreatedAt ?? null,
-    items: entry.items.map((i) => ({ menuItemId: i.menuItemId, qty: i.qty, notes: i.notes || '' })),
+    items: entry.items.map((i) => ({
+      menuItemId: i.menuItemId,
+      qty: i.qty,
+      notes: i.notes || '',
+      components: (i.components || []).map((c) => (typeof c === 'object' ? c.menuItemId : c)),
+    })),
   };
 }
 

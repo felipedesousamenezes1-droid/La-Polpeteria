@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { ORDER_STATUS_LABELS, CANCEL_REASONS, ROLE_LABELS } from '../../../../shared/constants.js';
 import { useAppState, actions, outboxActions, toast } from '../../lib/store.js';
 import { money, time, uuid } from '../../lib/util.js';
-import { ConfirmDialog, Icon, Modal, QtyStepper, EmptyState } from '../../components/ui.jsx';
+import { ConfirmDialog, Icon, Modal, QtyStepper, EmptyState, ComboParts } from '../../components/ui.jsx';
 
 const STATUS_CHIP = {
   novo: 'bg-pomodoro-100 text-pomodoro-800',
@@ -55,6 +55,7 @@ export function CancelDialog({ item, order, onClose }) {
         Mesa {order.tableNumber} · Pedido #{order.seq}
       </p>
       <p className="mt-1 text-lg">{item.name}</p>
+      <ComboParts components={item.components} />
       {item.activeQty > 1 && (
         <div className="mt-3 flex items-center justify-between">
           <span className="font-semibold">Quantidade a cancelar</span>
@@ -103,6 +104,7 @@ function LocalEntry({ entry }) {
           <li key={idx}>
             <span className="font-semibold">{i.qty}×</span> {i.name}
             {i.notes && <span className="ml-1 text-sm font-semibold text-pomodoro-700">({i.notes})</span>}
+            <ComboParts components={i.components} />
           </li>
         ))}
       </ul>
@@ -223,6 +225,7 @@ export default function TabOrders({ table, tab, onBack }) {
                       <span className="font-semibold">{i.activeQty || i.qty}×</span> {i.name}
                       <span className="ml-1 text-sm text-seppia tabular-nums">{money(i.unitPriceCents * i.activeQty)}</span>
                     </p>
+                    <ComboParts components={i.components} />
                     {i.notes && <p className="text-sm font-semibold text-pomodoro-700">Obs.: {i.notes}</p>}
                     {i.cancelledQty > 0 && (
                       <p className="text-xs font-semibold text-pomodoro-700">

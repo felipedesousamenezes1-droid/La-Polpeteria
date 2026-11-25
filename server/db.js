@@ -26,6 +26,7 @@ CREATE TABLE menu_items (
   category    TEXT NOT NULL,
   price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
   active      INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+  in_combo    INTEGER NOT NULL DEFAULT 0 CHECK (in_combo IN (0, 1)),
   sort        INTEGER NOT NULL DEFAULT 0,
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
@@ -82,6 +83,7 @@ CREATE TABLE order_items (
   unit_price_cents INTEGER NOT NULL CHECK (unit_price_cents >= 0),
   qty              INTEGER NOT NULL CHECK (qty > 0),
   notes            TEXT NOT NULL DEFAULT '',
+  components       TEXT NOT NULL DEFAULT '[]', -- escolhas do Menu Completo (JSON), congeladas
   created_at       TEXT NOT NULL,
   UNIQUE (order_id, line_no)
 );

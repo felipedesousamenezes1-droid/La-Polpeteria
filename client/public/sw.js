@@ -1,6 +1,6 @@
-/* Service worker da La Pulpeteria: mantém a interface disponível sem rede.
+/* Service worker da La Polpeteria: mantém a interface disponível sem rede.
    Pedidos NUNCA passam pelo cache: a API e o tempo real vão sempre direto ao servidor. */
-const CACHE = 'pulpeteria-shell-v1';
+const CACHE = 'polpeteria-shell-v1';
 const SHELL = ['/', '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png'];
 
 self.addEventListener('install', (event) => {
