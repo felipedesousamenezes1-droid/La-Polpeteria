@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { CATEGORIES, LIMITS, ORDER_FLOW, COMBO_CATEGORY, COMBO_STEPS } from '../shared/constants.js';
+import { CATEGORIES, LIMITS, ORDER_FLOW, COMBO_CATEGORY, COMBO_STEPS, MANAGER_ROLES, ROLE_LABELS } from '../shared/constants.js';
 import { HttpError, nowIso, localDate, localDayRange, sha256, UUID_RE, cleanText, isInt } from './util.js';
 
 /**
@@ -12,7 +12,10 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     setSetting: db.prepare(
       'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
     ),
-    menuAll: db.prepare('SELECT * FROM menu_items ORDER BY sort, id'),
+    menuAll: db.prepare('SELECT * FROM menu_items WHERE archived = 0 ORDER BY sort, id'),
+    menuUsed: db.prepare('SELECT 1 FROM order_items WHERE menu_item_id = ? LIMIT 1').pluck(),
+    menuArchive: db.prepare('UPDATE menu_items SET active = 0, in_combo = 0, archived = 1, updated_at = ? WHERE id = ?'),
+    menuDelete: db.prepare('DELETE FROM menu_items WHERE id = ?'),
     menuById: db.prepare('SELECT * FROM menu_items WHERE id = ?'),
     menuMaxSort: db.prepare('SELECT COALESCE(MAX(sort), 0) FROM menu_items').pluck(),
     insertMenu: db.prepare(`INSERT INTO menu_items (name, description, category, price_cents, active, in_combo, sort, created_at, updated_at)
@@ -58,6 +61,7 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       tableCount: Number(q.getSetting.get('table_count')),
       warnMinutes: Number(q.getSetting.get('warn_minutes')),
       lateMinutes: Number(q.getSetting.get('late_minutes')),
+      proposalTitle: q.getSetting.get('proposal_title') || 'Proposta do mês',
     };
   }
 
@@ -361,7 +365,7 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       if (o.status !== from) {
         throw new HttpError(409, 'STATUS_CONFLICT', 'O pedido já foi atualizado em outro aparelho.', { order: getOrder(orderId) });
       }
-      const kitchenLike = actor.role === 'cozinha' || actor.role === 'admin';
+      const kitchenLike = actor.role === 'cozinha' || MANAGER_ROLES.includes(actor.role);
       const pickupOnly = (from === 'pronto' && to === 'entregue') || (from === 'entregue' && to === 'pronto');
       if (!kitchenLike && !pickupOnly) throw new HttpError(403, 'FORBIDDEN', 'Somente a cozinha altera o preparo.');
       const order = getOrder(orderId);
@@ -559,7 +563,7 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
 
   function validateMenuInput(input, current) {
     const name = cleanText(input.name ?? current?.name, 80);
-    const description = cleanText(input.description ?? current?.description ?? '', 200);
+    const description = cleanText(input.description ?? current?.description ?? '', LIMITS.maxDescription);
     const category = input.category ?? current?.category;
     const priceCents = input.priceCents ?? current?.price_cents;
     const active = input.active ?? (current ? !!current.active : true);
@@ -584,7 +588,7 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
   function updateMenuItem(actor, id, input) {
     db.transaction(() => {
       const current = q.menuById.get(id);
-      if (!current) throw new HttpError(404, 'NOT_FOUND', 'Item não encontrado.');
+      if (!current || current.archived) throw new HttpError(404, 'NOT_FOUND', 'Item não encontrado.');
       const v = validateMenuInput(input || {}, current);
       q.updateMenu.run({ ...v, id, now: nowIso() });
       const before = { name: current.name, description: current.description, category: current.category, price_cents: current.price_cents, active: current.active, in_combo: current.in_combo };
@@ -595,13 +599,30 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     return serializeMenuItem(q.menuById.get(id));
   }
 
+  /** Excluir item do cardápio: apaga de verdade se nunca foi pedido; senão arquiva (histórico preservado). */
+  function removeMenuItem(actor, id) {
+    const result = db.transaction(() => {
+      const current = q.menuById.get(id);
+      if (!current || current.archived) throw new HttpError(404, 'NOT_FOUND', 'Item não encontrado.');
+      const used = !!q.menuUsed.get(id);
+      if (used) q.menuArchive.run(nowIso(), id);
+      else q.menuDelete.run(id);
+      audit.log(actor, 'menu.delete', 'menu_item', id, { item: current.name, modo: used ? 'arquivado (já consta em pedidos)' : 'excluído' });
+      return used ? 'archived' : 'deleted';
+    })();
+    emit('menu:changed', menu());
+    return { result };
+  }
+
   function updateSettings(actor, input = {}) {
     const cur = settings();
     const next = {
       tableCount: input.tableCount ?? cur.tableCount,
       warnMinutes: input.warnMinutes ?? cur.warnMinutes,
       lateMinutes: input.lateMinutes ?? cur.lateMinutes,
+      proposalTitle: input.proposalTitle == null ? cur.proposalTitle : cleanText(input.proposalTitle, 40),
     };
+    if (next.proposalTitle.length < 3) throw new HttpError(400, 'BAD_TITLE', 'Informe o nome da proposta do mês.');
     if (!isInt(next.tableCount, LIMITS.minTables, LIMITS.maxTables)) {
       throw new HttpError(400, 'BAD_TABLES', `Número de mesas deve estar entre ${LIMITS.minTables} e ${LIMITS.maxTables}.`);
     }
@@ -616,6 +637,7 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       q.setSetting.run('table_count', String(next.tableCount));
       q.setSetting.run('warn_minutes', String(next.warnMinutes));
       q.setSetting.run('late_minutes', String(next.lateMinutes));
+      q.setSetting.run('proposal_title', next.proposalTitle);
       audit.log(actor, 'settings.update', 'settings', null, { de: cur, para: next });
     })();
     emit('settings:changed', settings());
@@ -663,7 +685,171 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     };
   }
 
+  // ---------------------------------------------------------------- relatórios (Proprietário)
+
+  function datesBetween(from, to) {
+    const out = [];
+    const [y, m, d] = from.split('-').map(Number);
+    for (let i = 0; i < 400; i++) {
+      const dt = new Date(y, m - 1, d + i, 12);
+      const s = localDate(dt);
+      if (s > to) break;
+      out.push(s);
+    }
+    return out;
+  }
+
+  function report(from, to) {
+    localDayRange(from);
+    localDayRange(to);
+    if (from > to) throw new HttpError(400, 'BAD_RANGE', 'A data inicial deve ser anterior à final.');
+    const days = datesBetween(from, to);
+    if (days[days.length - 1] !== to) throw new HttpError(400, 'BAD_RANGE', 'Período longo demais (máximo de 400 dias).');
+    const { startIso } = localDayRange(from);
+    const { endIso } = localDayRange(to);
+
+    const orders = loadOrders('business_date BETWEEN ? AND ?', [from, to]);
+    const menuRows = new Map(db.prepare('SELECT * FROM menu_items').all().map((m) => [m.id, m]));
+    const products = new Map();
+    const categories = new Map();
+    const byDay = new Map();
+    const hours = Array.from({ length: 24 }, (_, h) => ({ hour: h, orders: 0, items: 0, revenueCents: 0 }));
+    const waiters = new Map();
+    const choices = new Map();
+    const reasons = new Map();
+    const tabsServed = new Set();
+    let salesCents = 0;
+    let itemsSold = 0;
+    let ordersCount = 0;
+    let cancelledQty = 0;
+    let cancelledCents = 0;
+    let sentQty = 0;
+
+    for (const o of orders) {
+      const hour = new Date(o.receivedAt).getHours();
+      const day = byDay.get(o.businessDate) || { date: o.businessDate, revenueCents: 0, orders: 0, items: 0 };
+      byDay.set(o.businessDate, day);
+      const who = o.createdBy.name || ROLE_LABELS[o.createdBy.role] || o.createdBy.role;
+      const waiter = waiters.get(who) || { name: who, orders: 0, items: 0, revenueCents: 0 };
+      waiters.set(who, waiter);
+      if (!o.fullyCancelled) {
+        ordersCount++;
+        day.orders++;
+        hours[hour].orders++;
+        waiter.orders++;
+        tabsServed.add(o.tabId);
+      }
+      for (const i of o.items) {
+        const m = menuRows.get(i.menuItemId);
+        const name = m?.name ?? i.name;
+        const category = m && !m.archived ? m.category : i.category;
+        const value = i.activeQty * i.unitPriceCents;
+        const p = products.get(i.menuItemId) || { menuItemId: i.menuItemId, name, category, qty: 0, revenueCents: 0, cancelledQty: 0, cancelledCents: 0, orderIds: new Set(), inCombos: 0 };
+        products.set(i.menuItemId, p);
+        p.qty += i.activeQty;
+        p.revenueCents += value;
+        p.cancelledQty += i.cancelledQty;
+        p.cancelledCents += i.cancelledQty * i.unitPriceCents;
+        if (i.activeQty > 0) p.orderIds.add(o.id);
+        const c = categories.get(category) || { category, qty: 0, revenueCents: 0 };
+        categories.set(category, c);
+        c.qty += i.activeQty;
+        c.revenueCents += value;
+        salesCents += value;
+        itemsSold += i.activeQty;
+        sentQty += i.qty;
+        day.revenueCents += value;
+        day.items += i.activeQty;
+        hours[hour].items += i.activeQty;
+        hours[hour].revenueCents += value;
+        waiter.items += i.activeQty;
+        waiter.revenueCents += value;
+        if (i.activeQty > 0) {
+          for (const comp of i.components) {
+            const key = `${comp.step}|${comp.menuItemId}`;
+            const ch = choices.get(key) || { step: comp.step, menuItemId: comp.menuItemId, name: menuRows.get(comp.menuItemId)?.name ?? comp.name, qty: 0 };
+            choices.set(key, ch);
+            ch.qty += i.activeQty;
+          }
+        }
+        for (const cl of i.cancellations) {
+          cancelledQty += cl.qty;
+          cancelledCents += cl.qty * i.unitPriceCents;
+          const r = reasons.get(cl.reason) || { reason: cl.reason, qty: 0, valueCents: 0 };
+          reasons.set(cl.reason, r);
+          r.qty += cl.qty;
+          r.valueCents += cl.qty * i.unitPriceCents;
+        }
+      }
+    }
+
+    // "Preferência": quantas vezes o prato foi servido, avulso ou escolhido dentro do Menu Completo.
+    for (const ch of choices.values()) {
+      const p = products.get(ch.menuItemId);
+      if (p) p.inCombos += ch.qty;
+      else {
+        const m = menuRows.get(ch.menuItemId);
+        products.set(ch.menuItemId, { menuItemId: ch.menuItemId, name: ch.name, category: m && !m.archived ? m.category : '', qty: 0, revenueCents: 0, cancelledQty: 0, cancelledCents: 0, orderIds: new Set(), inCombos: ch.qty });
+      }
+    }
+    const productList = [...products.values()]
+      .map(({ orderIds, ...p }) => ({ ...p, ordersCount: orderIds.size, servedQty: p.qty + p.inCombos }))
+      .sort((a, b) => b.qty - a.qty || b.revenueCents - a.revenueCents || a.name.localeCompare(b.name));
+
+    const closedTabs = db.prepare("SELECT * FROM tabs WHERE status = 'closed' AND closed_at >= ? AND closed_at < ?").all(startIso, endIso);
+    const closedRevenueCents = closedTabs.reduce((s, t) => s + t.closed_total_cents, 0);
+    const avgTabMinutes = closedTabs.length
+      ? closedTabs.reduce((s, t) => s + (new Date(t.closed_at) - new Date(t.opened_at)), 0) / closedTabs.length / 60000
+      : null;
+
+    const prep = db
+      .prepare(
+        `SELECT o.received_at AS r, MIN(a.at) AS p FROM orders o
+         JOIN audit_log a ON a.entity_id = o.id AND a.action = 'order.status' AND json_extract(a.details, '$.para') = 'pronto'
+         WHERE o.business_date BETWEEN ? AND ? GROUP BY o.id`,
+      )
+      .all(from, to);
+    const avgPrepMinutes = prep.length ? prep.reduce((s, x) => s + (new Date(x.p) - new Date(x.r)), 0) / prep.length / 60000 : null;
+
+    return {
+      from,
+      to,
+      generatedAt: nowIso(),
+      kpis: {
+        salesCents,
+        itemsSold,
+        ordersCount,
+        tablesServed: tabsServed.size,
+        closedTabs: closedTabs.length,
+        closedRevenueCents,
+        avgTicketCents: closedTabs.length ? Math.round(closedRevenueCents / closedTabs.length) : null,
+        avgTabMinutes,
+        cancelledQty,
+        cancelledCents,
+        cancelRatePct: sentQty ? (cancelledQty / sentQty) * 100 : 0,
+        avgPrepMinutes,
+        prepCount: prep.length,
+        daysWithSales: byDay.size,
+      },
+      products: productList,
+      categories: CATEGORIES.map((c) => categories.get(c)).filter(Boolean).concat([...categories.values()].filter((c) => !CATEGORIES.includes(c.category))),
+      days: days.filter((d) => byDay.has(d)).map((d) => byDay.get(d)),
+      hours,
+      waiters: [...waiters.values()].sort((a, b) => b.revenueCents - a.revenueCents),
+      comboChoices: COMBO_STEPS.map((s) => ({
+        step: s.label,
+        items: [...choices.values()].filter((c) => c.step === s.label).sort((a, b) => b.qty - a.qty),
+      })),
+      cancellations: {
+        byReason: [...reasons.values()].sort((a, b) => b.qty - a.qty),
+        byProduct: productList.filter((p) => p.cancelledQty > 0).sort((a, b) => b.cancelledQty - a.cancelledQty),
+      },
+    };
+  }
+
   return {
+    report,
+    removeMenuItem,
     settings,
     menu,
     state,

@@ -6,6 +6,8 @@ Sistema de pedidos em tempo real para salão e cozinha. O garçom lança o pedid
 | --- | --- | --- |
 | ![Mesas](docs/capturas/01-garcom-mesas.png) | ![Cozinha](docs/capturas/07-cozinha-quadro.png) | ![Caixa](docs/capturas/08-caixa-conta.png) |
 
+![Relatórios do Proprietário](docs/capturas/09-proprietario-painel.png)
+
 ## Como rodar (um comando)
 
 Pré-requisito: [Node.js](https://nodejs.org) 20 ou superior (recomendado 22 LTS).
@@ -29,8 +31,11 @@ O `npm install` instala as dependências e compila a interface. O `npm start` in
 | --- | --- | --- |
 | Garçom | `1111` | mesas, pedidos, cancelamento com motivo, "fechar mesa" |
 | Cozinha | `2222` | quadro Novo → Preparando → Pronto (não cancela nem apaga) |
-| Admin | `3333` | tudo, mais cardápio, mesas, PINs, histórico, auditoria e backups |
+| Admin | `3333` | tudo nas telas acima, mais cardápio, mesas, PINs, auditoria e backups |
 | Caixa | `4444` | conta por mesa, divisão, impressão, fechamento e reabertura (com PIN de Admin) |
+| **Proprietário** | `5555` | tudo o que o Admin faz, mais **relatórios e gráficos de vendas** e exportação para Excel |
+
+Em um banco que já estava em uso, o PIN do Proprietário é criado como `5555`; se algum perfil já usar esse número, o sistema usa o próximo livre (`5556`, …). Só o Proprietário troca o próprio PIN.
 
 O perfil fica lembrado no aparelho até alguém tocar em "Sair".
 
@@ -87,7 +92,7 @@ Os navegadores só ativam todos os recursos de PWA, entre eles o cache da interf
 | Dois garçons na mesma mesa | Índice único "uma conta aberta por mesa" mais transações serializadas: pedidos simultâneos só **somam** itens na mesma conta. Mudanças de status usam concorrência otimista (`from → to`): o segundo toque com dado antigo é recusado e o aparelho atualiza. |
 | Caixa | Conta por mesa com horário, quantidade, valor unitário, subtotal e total. Cancelados aparecem à parte, fora do total. **Fechar exige o total conferido**: se algo mudou nesse meio-tempo, o fechamento é recusado. A mesa fica travada; reabrir exige **PIN de Admin** e fica registrado. Divisão exata em centavos, impressão (80 mm/A4) e compartilhamento. |
 | Conta fechada × garçom offline | Um pedido feito offline para uma conta que o caixa fechou nesse intervalo é **recusado de forma visível** no aparelho, nunca descartado em silêncio. O garçom pode enviá-lo para uma nova conta da mesa. |
-| Backup e recuperação | Backup online do SQLite **a cada 10 minutos** (quando houve movimento) e na inicialização, mantendo os **últimos 50** em `data/backups/`. Exportação automática do dia anterior em **CSV e JSON** em `data/exports/`. Botão **"Exportar dia"** e "Fazer backup agora" no Admin. |
+| Backup e recuperação | Backup online do SQLite **a cada 10 minutos** (quando houve movimento) e na inicialização, mantendo os **últimos 50** em `data/backups/`. Exportação automática do dia anterior em **CSV e JSON** em `data/exports/`. Botão "Fazer backup agora" no Admin; relatórios em planilha (Excel/JSON) na tela do Proprietário. |
 | Reinício do servidor | Sessões ficam no banco: após reiniciar, os aparelhos reconectam sozinhos, sem novo PIN, baixam o estado completo e enviam o que estava pendente. |
 
 ### Restaurar um backup
@@ -99,19 +104,32 @@ Os navegadores só ativam todos os recursos de PWA, entre eles o cache da interf
 
 ## Cardápio
 
-- **Ativo:** a **Proposta de Novembro** com os preços do cardápio impresso.
-  - Entrada: Rotolini di Zucchine, R$ 36.
-  - Pratos principais: Risotto alla Pera e Gorgonzola, R$ 72; Pasta al Pesto alla Trapanese, R$ 72; Pasta all'Ortolana, R$ 68.
-  - Sobremesas: Tiramisu, R$ 29; Cheesecake alla Ricotta, R$ 29.
-  - **Menu Completo** (entrada + prato principal + sobremesa): R$ 130.
-- **Menu Completo:** o garçom toca no item e escolhe o prato principal e a sobremesa. A entrada, por ser única, já vem marcada, e o item entra no pedido com a última escolha. A cozinha vê as três escolhas e o caixa cobra R$ 130. A soma avulsa (R$ 137) não é usada. Para o próximo mês, basta marcar ou desmarcar no Admin quais pratos "fazem parte do Menu Completo".
-- **Bebidas:** são exemplos com **preços fictícios**. Ajuste-as no Admin antes de usar no salão.
-- **Pratos de exemplo:** mais 18 pratos italianos (massas, pizzas, carnes etc.) vêm **desativados**. Ative ou edite no Admin quando quiser.
+O cardápio é o da casa (arquivo `server/catalog.js`), organizado nas seções do cardápio impresso:
+
+- **Bebidas:** Não alcoólicas · Alcoólicas · Drinks alcoólicos.
+- **Proposta do mês** (o título, por exemplo "Proposta de Novembro", é editado em Admin → Mesas e PINs): Entrada · Prato principal · Sobremesa · Menu Completo.
+- **Carta de vinhos:** Vinhos tintos · Vinhos brancos · Vinho em taça.
+
+**Menu Completo (R$ 130):** o garçom toca no item e escolhe o prato principal e a sobremesa. A entrada, por ser única, já vem marcada, e o item entra no pedido com a última escolha. A cozinha vê as três escolhas e o caixa cobra R$ 130. Para o próximo mês, basta marcar ou desmarcar no Admin quais pratos "fazem parte do Menu Completo".
+
+**Excluir item:** no Admin, o ícone de lixeira remove o item do cardápio. Se ele nunca foi pedido, é apagado; se já consta em algum pedido, é arquivado (some do cardápio, mas contas e relatórios antigos continuam corretos).
+
+**Atualização automática:** ao mudar o `server/catalog.js` e aumentar `CATALOG_VERSION`, o servidor sincroniza o cardápio na próxima inicialização com a mesma regra (apaga o que nunca foi pedido, arquiva o que já foi).
+
+## Relatórios do Proprietário
+
+Entre com o PIN do Proprietário. A tela **Relatórios** tem dois painéis:
+
+- **Painel de vendas** (último fim de semana, este mês, últimos 30 dias, hoje ou datas escolhidas): vendas, valor recebido, ticket médio por mesa, mesas atendidas, tempo médio de preparo, cancelamentos; gráficos de **produtos mais vendidos** (por quantidade ou faturamento), **pratos preferidos** (avulsos + escolhidos no Menu Completo), **escolhas no Menu Completo**, vendas por seção, por dia e por horário; desempenho por garçom; motivos de cancelamento; tabela completa de produtos. Atualiza sozinho durante o serviço.
+- **Dia a dia:** contas, pedidos e cancelamentos de um dia.
+- **Baixar planilha (Excel)** ou **completo (JSON)** do período escolhido.
+
+"Preferência" é medida pelo que os clientes pedem; o sistema não coleta avaliações.
 
 ## Testes
 
 ```bash
-npm test       # 28 testes: pedidos, status, permissões, imutabilidade, Menu Completo e os 5 cenários críticos
+npm test       # 33 testes: pedidos, status, permissões, imutabilidade, Menu Completo, cardápio, relatórios e os 5 cenários críticos
 npm run e2e    # navegador real: garçom (celular) + cozinha (tela grande) + caixa, com queda de rede
 ```
 
@@ -145,11 +163,12 @@ server/          Express + Socket.IO + SQLite
   services.js    regras de negócio (pedidos, cancelamentos, contas, Menu Completo)
   audit.js       log de auditoria encadeado por hash
   backup.js      backups e exportações CSV/JSON
-  seed.js        cardápio inicial
+  catalog.js     cardápio oficial e sincronização do banco
+  seed.js        configurações iniciais e atualizações de dados
 client/          React + Vite + Tailwind (PWA)
   src/lib/outbox-core.js   fila offline + envio HTTP (mesmo código usado nos testes)
   src/lib/store.js         estado, tempo real versionado, sessão
-  src/screens/             garçom, cozinha, caixa, admin
+  src/screens/             garçom, cozinha, caixa, admin, proprietário (relatórios)
 shared/constants.js        categorias, etapas do Menu Completo, atalhos de observação
 tests/                     testes automatizados (node:test)
 scripts/e2e-duas-abas.mjs  teste ponta a ponta no navegador

@@ -278,7 +278,7 @@ function connectSocket() {
 // ------------------------------------------------------------------ fila offline
 
 let outbox = null;
-const SENDER_ROLES = ['garcom', 'caixa', 'admin'];
+const SENDER_ROLES = ['garcom', 'caixa', 'admin', 'dono'];
 
 async function initOutbox() {
   const storage = await createDeviceStorage();
@@ -315,7 +315,7 @@ export async function login(pin, name) {
   const session = { token: res.token, role: res.role, name: res.name };
   writeJson(SESSION_KEY, session);
   if (name) localStorage.setItem(NAME_KEY, name);
-  const screen = res.role === 'admin' ? state.screen || 'admin' : res.role;
+  const screen = res.role === 'admin' ? 'admin' : res.role;
   localStorage.setItem(SCREEN_KEY, screen);
   set({ session, screen, loaded: false, orders: {}, tabs: {}, readyAlerts: [] });
   connectSocket();

@@ -468,7 +468,8 @@ describe('5. Conferência: total do caixa = itens enviados − cancelados', () =
 
     const actions = (await admin.get('/api/admin/audit')).data.entries.filter((e) => e.entityId === tabId).map((e) => e.action);
     for (const a of ['tab.open', 'tab.close', 'tab.reopen_denied', 'tab.reopen']) assert.ok(actions.includes(a), `auditoria contém ${a}`);
-    const hist = (await admin.get('/api/admin/history')).data;
+    const dono = await login(srv.base, 'dono');
+    const hist = (await dono.get('/api/owner/history')).data;
     assert.equal(hist.summary.cancelledCents, cancelledTotal);
   });
 });

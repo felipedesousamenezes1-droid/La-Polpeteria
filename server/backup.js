@@ -22,18 +22,12 @@ function writeAtomic(file, content) {
   fs.renameSync(tmp, file);
 }
 
-/** Monta a exportação de um dia (JSON completo + CSV por item, pronto para Excel em pt-BR). */
-export function buildDayExport({ services, audit }, date) {
+/** Linhas do CSV (uma por item enviado) e dados completos de um dia. */
+function dayData({ services, audit }, date) {
   const h = services.history(date);
   const { startIso, endIso } = localDayRange(date);
   const tabsById = new Map(h.tabs.map((t) => [t.id, t]));
-
-  const header = [
-    'data', 'pedido_n', 'mesa', 'conta_id', 'status_conta', 'enviado_em', 'lancado_por', 'categoria', 'item',
-    'observacoes', 'qtd_enviada', 'qtd_cancelada', 'qtd_valida', 'preco_unitario', 'subtotal_valido', 'status_pedido',
-    'cancelamentos',
-  ];
-  const rows = [header.join(';')];
+  const rows = [];
   for (const o of h.orders) {
     const tab = tabsById.get(o.tabId) || services.getTab(o.tabId);
     for (const i of o.items) {
@@ -64,23 +58,44 @@ export function buildDayExport({ services, audit }, date) {
       );
     }
   }
-  const csv = `﻿${rows.join('\r\n')}\r\n`;
+  const data = {
+    data: date,
+    resumo: h.summary,
+    contas: h.tabs.map((t) => ({ ...t, conta: services.getBill(t.id) })),
+    pedidos: h.orders,
+    cancelamentos: h.cancellations,
+    auditoria: audit.list({ startIso, endIso, limit: 100000 }).reverse(),
+  };
+  return { rows, data, hasMovement: h.orders.length > 0 || h.tabs.length > 0 };
+}
 
-  const json = JSON.stringify(
-    {
-      restaurante: 'La Polpeteria',
-      data: date,
-      geradoEm: nowIso(),
-      resumo: h.summary,
-      contas: h.tabs.map((t) => ({ ...t, conta: services.getBill(t.id) })),
-      pedidos: h.orders,
-      cancelamentos: h.cancellations,
-      auditoria: audit.list({ startIso, endIso, limit: 100000 }).reverse(),
-    },
-    null,
-    2,
-  );
-  return { csv, json };
+const CSV_HEADER = [
+  'data', 'pedido_n', 'mesa', 'conta_id', 'status_conta', 'enviado_em', 'lancado_por', 'categoria', 'item',
+  'observacoes', 'qtd_enviada', 'qtd_cancelada', 'qtd_valida', 'preco_unitario', 'subtotal_valido', 'status_pedido',
+  'cancelamentos',
+].join(';');
+
+const toCsv = (rows) => `\uFEFF${[CSV_HEADER, ...rows].join('\r\n')}\r\n`;
+
+/** Exportação de um dia (CSV por item, pronto para Excel em pt-BR, e JSON completo). */
+export function buildDayExport(ctx, date) {
+  const { rows, data } = dayData(ctx, date);
+  const json = JSON.stringify({ restaurante: 'La Polpeteria', geradoEm: nowIso(), ...data }, null, 2);
+  return { csv: toCsv(rows), json };
+}
+
+/** Exportação de um período (relatórios do Proprietário): só os dias com movimento. */
+export function buildRangeExport(ctx, from, to) {
+  const report = ctx.services.report(from, to);
+  const days = [];
+  const rows = [];
+  for (const d of [...new Set([...report.days.map((x) => x.date)])]) {
+    const r = dayData(ctx, d);
+    rows.push(...r.rows);
+    days.push(r.data);
+  }
+  const json = JSON.stringify({ restaurante: 'La Polpeteria', de: from, ate: to, geradoEm: nowIso(), relatorio: report, dias: days }, null, 2);
+  return { csv: toCsv(rows), json };
 }
 
 /**

@@ -9,8 +9,9 @@ import { openDatabase } from './db.js';
 import { createAudit } from './audit.js';
 import { createAuth } from './auth.js';
 import { createServices } from './services.js';
-import { seedIfEmpty } from './seed.js';
-import { createBackupManager, buildDayExport } from './backup.js';
+import { seedIfEmpty, runDataMigrations } from './seed.js';
+import { MANAGER_ROLES } from '../shared/constants.js';
+import { createBackupManager, buildRangeExport } from './backup.js';
 import { HttpError, localDate, localDayRange } from './util.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -56,6 +57,8 @@ export async function createApp(config = loadConfig(), { logger = console } = {}
   const db = openDatabase(path.join(config.dataDir, 'polpeteria.db'));
   const audit = createAudit(db);
   seedIfEmpty(db, audit);
+  const migrated = runDataMigrations(db, audit);
+  if (migrated) logger.log('[cardápio] sincronizado com o catálogo oficial:', migrated);
   const auth = createAuth({ db, audit });
 
   const app = express();
@@ -121,11 +124,11 @@ export async function createApp(config = loadConfig(), { logger = console } = {}
     next();
   });
 
-  /** Admin pode tudo; os demais perfis só o que for listado. */
+  /** Admin e Proprietário podem tudo; os demais perfis só o que for listado. */
   const allow =
     (...roles) =>
     (req, res, next) => {
-      if (req.actor.role === 'admin' || roles.includes(req.actor.role)) return next();
+      if (MANAGER_ROLES.includes(req.actor.role) || roles.includes(req.actor.role)) return next();
       throw new HttpError(403, 'FORBIDDEN', 'Este perfil não tem permissão para esta ação.');
     };
 
@@ -163,18 +166,18 @@ export async function createApp(config = loadConfig(), { logger = console } = {}
   admin.get('/menu', (req, res) => res.json(services.menu()));
   admin.post('/menu', (req, res) => res.status(201).json(services.createMenuItem(req.actor, req.body)));
   admin.put('/menu/:id', (req, res) => res.json(services.updateMenuItem(req.actor, Number(req.params.id), req.body)));
+  admin.delete('/menu/:id', (req, res) => res.json(services.removeMenuItem(req.actor, Number(req.params.id))));
   admin.put('/settings', (req, res) => res.json(services.updateSettings(req.actor, req.body)));
   admin.put('/pins/:role', (req, res) => {
     auth.changePin(req.actor, req.params.role, req.body?.pin);
     for (const s of io.sockets.sockets.values()) {
-      if (s.data.session?.role === req.params.role && req.params.role !== 'admin') {
+      if (s.data.session?.role === req.params.role && !MANAGER_ROLES.includes(req.params.role)) {
         s.emit('session:revoked');
         s.disconnect(true);
       }
     }
     res.json({ ok: true });
   });
-  admin.get('/history', (req, res) => res.json(services.history(req.query.date || localDate())));
   admin.get('/audit', (req, res) => {
     const date = req.query.date || localDate();
     res.json({ date, entries: audit.list({ ...localDayRange(date), limit: Math.min(Number(req.query.limit) || 500, 5000) }) });
@@ -186,17 +189,34 @@ export async function createApp(config = loadConfig(), { logger = console } = {}
     const name = await backups.backupNow('manual');
     res.status(201).json({ name });
   });
-  admin.get('/export', (req, res) => {
-    const date = req.query.date || localDate();
-    localDayRange(date); // valida
+  api.use('/admin', admin);
+
+  // ---------------------------------------------------------- Proprietário: relatórios
+  const owner = express.Router();
+  owner.use((req, res, next) => {
+    if (req.actor.role !== 'dono') throw new HttpError(403, 'FORBIDDEN', 'Relatórios: acesso exclusivo do Proprietário.');
+    next();
+  });
+  const period = (req) => {
+    const to = req.query.to || localDate();
+    return { from: req.query.from || to, to };
+  };
+  owner.get('/report', (req, res) => {
+    const { from, to } = period(req);
+    res.json(services.report(from, to));
+  });
+  owner.get('/history', (req, res) => res.json(services.history(req.query.date || localDate())));
+  owner.get('/export', (req, res) => {
+    const { from, to } = period(req);
     const format = req.query.format === 'csv' ? 'csv' : 'json';
-    const { csv, json } = buildDayExport({ services, audit }, date);
-    db.transaction(() => audit.log(req.actor, 'export.download', 'day', date, { formato: format }))();
-    res.set('Content-Disposition', `attachment; filename="la-polpeteria_${date}.${format}"`);
+    const { csv, json } = buildRangeExport({ services, audit }, from, to);
+    db.transaction(() => audit.log(req.actor, 'export.download', 'periodo', `${from}..${to}`, { formato: format }))();
+    const name = from === to ? from : `${from}_a_${to}`;
+    res.set('Content-Disposition', `attachment; filename="la-polpeteria_${name}.${format}"`);
     res.type(format === 'csv' ? 'text/csv; charset=utf-8' : 'application/json; charset=utf-8');
     res.send(format === 'csv' ? csv : json);
   });
-  api.use('/admin', admin);
+  api.use('/owner', owner);
 
   api.use((req, res) => res.status(404).json({ error: 'NOT_FOUND', message: 'Rota não encontrada.' }));
   app.use('/api', api);

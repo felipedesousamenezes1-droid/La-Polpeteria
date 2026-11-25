@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { CATEGORIES, ROLE_LABELS, ORDER_STATUS_LABELS, TAB_STATUS_LABELS, COMBO_CATEGORY, COMBO_STEPS } from '../../../../shared/constants.js';
 import { useAppState, api, toast, getState } from '../../lib/store.js';
 import { money, time, dateTime, todayLocal } from '../../lib/util.js';
@@ -7,44 +7,14 @@ import { EmptyState, Icon, Modal, QtyStepper, ConfirmDialog } from '../../compon
 const TABS = [
   ['menu', 'Cardápio'],
   ['config', 'Mesas e PINs'],
-  ['history', 'Histórico do dia'],
   ['audit', 'Auditoria'],
-  ['backup', 'Backups e exportação'],
+  ['backup', 'Backups'],
 ];
 
 function parsePrice(text) {
   const t = String(text).trim().replace(/[R$\s]/g, '');
   if (!/^\d+([.,]\d{1,2})?$/.test(t)) return null;
   return Math.round(Number(t.replace(',', '.')) * 100);
-}
-
-async function download(path, filename) {
-  const res = await fetch(path, { headers: { Authorization: `Bearer ${getState().session.token}` } });
-  if (!res.ok) throw new Error(`Falha ao exportar (${res.status})`);
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
-}
-
-function ExportButtons({ date }) {
-  const run = (format) =>
-    download(`/api/admin/export?date=${date}&format=${format}`, `la-polpeteria_${date}.${format}`).catch((e) => toast(e.message, 'error'));
-  return (
-    <div className="flex flex-wrap gap-2">
-      <button className="btn-primary" onClick={() => run('csv')} data-testid="exportar-csv">
-        <Icon name="download" /> Exportar dia (CSV/Excel)
-      </button>
-      <button className="btn-ghost" onClick={() => run('json')}>
-        <Icon name="download" /> Exportar dia (JSON)
-      </button>
-    </div>
-  );
 }
 
 // ------------------------------------------------------------------ Cardápio
@@ -143,6 +113,17 @@ function MenuItemForm({ item, onClose }) {
 function MenuPanel() {
   const s = useAppState();
   const [editing, setEditing] = useState(null);
+  const [removing, setRemoving] = useState(null);
+  async function remove() {
+    try {
+      const r = await api(`/api/admin/menu/${removing.id}`, { method: 'DELETE' });
+      toast(r.result === 'deleted' ? `"${removing.name}" excluído do cardápio` : `"${removing.name}" removido do cardápio (mantido só no histórico de contas antigas)`, 'ok', 5000);
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      setRemoving(null);
+    }
+  }
   async function toggle(item) {
     try {
       await api(`/api/admin/menu/${item.id}`, { method: 'PUT', body: { active: !item.active } });
@@ -158,7 +139,7 @@ function MenuPanel() {
           <Icon name="plus" /> Novo item
         </button>
       </div>
-      {CATEGORIES.map((c) => (
+      {CATEGORIES.filter((c) => s.menu.some((m) => m.category === c)).map((c) => (
         <section key={c} className="mb-4">
           <h3 className="mb-2 font-serif text-xl font-bold text-basilico-800">{c}</h3>
           <ul className="card divide-y divide-crema-200">
@@ -184,12 +165,24 @@ function MenuPanel() {
                   <button className="btn-ghost !min-h-11 !px-3" onClick={() => setEditing(m)} aria-label={`Editar ${m.name}`}>
                     <Icon name="note" className="h-5 w-5" />
                   </button>
+                  <button className="btn-ghost !min-h-11 !px-3 text-pomodoro-700" onClick={() => setRemoving(m)} aria-label={`Excluir ${m.name}`}>
+                    <Icon name="trash" className="h-5 w-5" />
+                  </button>
                 </li>
               ))}
           </ul>
         </section>
       ))}
       {editing && <MenuItemForm item={editing === 'new' ? null : editing} onClose={() => setEditing(null)} />}
+      <ConfirmDialog
+        open={!!removing}
+        danger
+        title={`Excluir "${removing?.name}"?`}
+        message="O item sai do cardápio. Se ele já foi pedido alguma vez, as contas e relatórios antigos continuam mostrando-o corretamente."
+        confirmLabel="Excluir"
+        onCancel={() => setRemoving(null)}
+        onConfirm={remove}
+      />
     </div>
   );
 }
@@ -220,7 +213,7 @@ function PinRow({ role }) {
       <ConfirmDialog
         open={confirm}
         title={`Trocar o PIN de ${ROLE_LABELS[role]}?`}
-        message={role === 'admin' ? 'O novo PIN passa a valer imediatamente.' : 'Os aparelhos conectados com esse perfil serão desconectados e precisarão do novo PIN. Pedidos pendentes nesses aparelhos continuam salvos.'}
+        message={role === 'admin' || role === 'dono' ? 'O novo PIN passa a valer imediatamente.' : 'Os aparelhos conectados com esse perfil serão desconectados e precisarão do novo PIN. Pedidos pendentes nesses aparelhos continuam salvos.'}
         onCancel={() => setConfirm(false)}
         onConfirm={save}
       />
@@ -264,6 +257,12 @@ function ConfigPanel() {
           </span>
           <QtyStepper value={cfg.lateMinutes} onChange={(v) => setCfg({ ...cfg, lateMinutes: v })} min={2} max={480} />
         </div>
+        <div className="py-2">
+          <label className="label" htmlFor="proposta">
+            Nome da proposta do mês (título da seção no cardápio)
+          </label>
+          <input id="proposta" className="input" maxLength={40} value={cfg.proposalTitle || ''} onChange={(e) => setCfg({ ...cfg, proposalTitle: e.target.value })} />
+        </div>
         <button className="btn-primary mt-2 w-full" onClick={save} disabled={busy}>
           Salvar configurações
         </button>
@@ -271,132 +270,10 @@ function ConfigPanel() {
       <section className="card p-4">
         <h3 className="mb-1 font-serif text-xl font-bold">PINs de acesso</h3>
         <p className="mb-2 text-sm text-seppia">De 4 a 8 dígitos; cada perfil precisa de um PIN diferente. Os PINs ficam guardados criptografados (hash).</p>
-        {['garcom', 'cozinha', 'caixa', 'admin'].map((r) => (
+        {['garcom', 'cozinha', 'caixa', 'admin', ...(s.session?.role === 'dono' ? ['dono'] : [])].map((r) => (
           <PinRow key={r} role={r} />
         ))}
       </section>
-    </div>
-  );
-}
-
-// ------------------------------------------------------------------ Histórico
-
-function Stat({ label, value, sub, tone = '' }) {
-  return (
-    <div className={`card p-3 ${tone}`}>
-      <p className="text-xs font-bold tracking-wide text-seppia uppercase">{label}</p>
-      <p className="font-serif text-2xl font-bold tabular-nums">{value}</p>
-      {sub && <p className="text-xs text-seppia">{sub}</p>}
-    </div>
-  );
-}
-
-function HistoryPanel() {
-  const s = useAppState();
-  const [date, setDate] = useState(todayLocal());
-  const [data, setData] = useState(null);
-  const load = useCallback(() => api(`/api/admin/history?date=${date}`).then(setData).catch((e) => toast(e.message, 'error')), [date]);
-  useEffect(() => {
-    load();
-  }, [load, s.rev, s.orders, s.tabs]);
-  if (!data) return <EmptyState title="Carregando…" />;
-  const sm = data.summary;
-  return (
-    <div>
-      <div className="mb-3 flex flex-wrap items-end gap-3">
-        <div>
-          <label className="label">Dia</label>
-          <input type="date" className="input" value={date} onChange={(e) => setDate(e.target.value)} />
-        </div>
-        <ExportButtons date={date} />
-      </div>
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Stat label="Contas fechadas" value={money(sm.closedRevenueCents)} sub={`${sm.closedTabsCount} conta(s)`} tone="border-basilico-200" />
-        <Stat label="Contas abertas" value={money(sm.openTabsCents)} sub={`${sm.openTabsCount} mesa(s)`} />
-        <Stat label="Pedidos" value={sm.ordersCount} sub={`${sm.itemsCount} itens · ${money(sm.ordersCents)}`} />
-        <Stat label="Cancelamentos" value={sm.cancelledCount} sub={money(sm.cancelledCents)} tone="border-pomodoro-200" />
-      </div>
-
-      <h3 className="mt-5 mb-2 font-serif text-xl font-bold">Contas</h3>
-      <div className="card overflow-x-auto">
-        <table className="w-full min-w-[560px] text-sm">
-          <thead className="bg-crema-200 text-left text-xs text-seppia uppercase">
-            <tr>
-              <th className="px-3 py-2">Mesa</th>
-              <th className="px-3 py-2">Aberta</th>
-              <th className="px-3 py-2">Fechada</th>
-              <th className="px-3 py-2">Status</th>
-              <th className="px-3 py-2 text-right">Total</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-crema-200">
-            {data.tabs.map((t) => (
-              <tr key={t.id}>
-                <td className="px-3 py-2 font-bold">{t.tableNumber}</td>
-                <td className="px-3 py-2">{time(t.openedAt)}</td>
-                <td className="px-3 py-2">{t.closedAt ? `${time(t.closedAt)} · ${ROLE_LABELS[t.closedBy?.role] || ''}` : '—'}</td>
-                <td className="px-3 py-2">
-                  {TAB_STATUS_LABELS[t.status]}
-                  {t.reopenCount ? ` (reaberta ${t.reopenCount}×)` : ''}
-                </td>
-                <td className="px-3 py-2 text-right font-semibold tabular-nums">{money(t.status === 'closed' ? t.closedTotalCents : t.totalCents)}</td>
-              </tr>
-            ))}
-            {!data.tabs.length && (
-              <tr>
-                <td colSpan={5} className="px-3 py-4 text-center text-seppia">
-                  Sem contas neste dia.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      <h3 className="mt-5 mb-2 font-serif text-xl font-bold">Pedidos</h3>
-      <ul className="space-y-2">
-        {[...data.orders].reverse().map((o) => (
-          <li key={o.id} className="card p-3 text-sm">
-            <div className="flex flex-wrap gap-x-3">
-              <strong>#{o.seq}</strong>
-              <span>Mesa {o.tableNumber}</span>
-              <span>{time(o.receivedAt)}</span>
-              <span>
-                {ROLE_LABELS[o.createdBy.role]}
-                {o.createdBy.name ? ` (${o.createdBy.name})` : ''}
-              </span>
-              <span>{o.fullyCancelled ? 'Cancelado' : ORDER_STATUS_LABELS[o.status]}</span>
-              <span className="ml-auto font-bold tabular-nums">{money(o.totalCents)}</span>
-            </div>
-            <p className="text-seppia">
-              {o.items.map((i) => `${i.qty}× ${i.name}${i.cancelledQty ? ` (${i.cancelledQty} cancel.)` : ''}`).join(' · ')}
-            </p>
-          </li>
-        ))}
-      </ul>
-
-      {data.cancellations.length > 0 && (
-        <>
-          <h3 className="mt-5 mb-2 font-serif text-xl font-bold text-pomodoro-800">Cancelamentos</h3>
-          <ul className="card divide-y divide-crema-200 text-sm">
-            {data.cancellations.map((c, idx) => (
-              <li key={idx} className="flex flex-wrap gap-x-3 px-3 py-2">
-                <span>{time(c.at)}</span>
-                <span>Mesa {c.tableNumber}</span>
-                <span>
-                  {c.qty}× {c.name}
-                </span>
-                <span className="text-seppia">{c.reason}</span>
-                <span className="text-seppia">
-                  {ROLE_LABELS[c.by.role]}
-                  {c.by.name ? ` (${c.by.name})` : ''}
-                </span>
-                <span className="ml-auto tabular-nums">{money(c.valueCents)}</span>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
     </div>
   );
 }
@@ -422,7 +299,10 @@ const ACTION_LABELS = {
   'settings.update': 'Configurações alteradas',
   'settings.pin_change': 'PIN alterado',
   'backup.manual': 'Backup manual',
-  'export.download': 'Exportação do dia',
+  'export.download': 'Relatório exportado',
+  'menu.delete': 'Item excluído do cardápio',
+  'menu.catalog_sync': 'Cardápio atualizado com o catálogo oficial',
+  'system.migration': 'Atualização do sistema',
 };
 
 function describe(e) {
@@ -505,11 +385,6 @@ function BackupPanel() {
   return (
     <div className="grid gap-4 lg:grid-cols-2">
       <section className="card p-4">
-        <h3 className="mb-2 font-serif text-xl font-bold">Exportar dia</h3>
-        <p className="mb-3 text-sm text-seppia">Planilha CSV (abre no Excel) ou JSON completo com contas, pedidos, cancelamentos e auditoria. O sistema também gera a exportação do dia anterior automaticamente.</p>
-        <ExportButtons date={todayLocal()} />
-      </section>
-      <section className="card p-4">
         <div className="mb-2 flex items-center justify-between gap-2">
           <h3 className="font-serif text-xl font-bold">Backups automáticos</h3>
           <button
@@ -559,7 +434,7 @@ export default function AdminScreen() {
     setTab(t);
     localStorage.setItem('polpeteria.adminTab', t);
   };
-  const panel = useMemo(() => ({ menu: <MenuPanel />, config: <ConfigPanel />, history: <HistoryPanel />, audit: <AuditPanel />, backup: <BackupPanel /> })[tab], [tab]);
+  const panel = useMemo(() => ({ menu: <MenuPanel />, config: <ConfigPanel />, audit: <AuditPanel />, backup: <BackupPanel /> })[tab], [tab]);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <nav className="flex gap-2 overflow-x-auto border-b border-crema-300 bg-crema-50 px-3 py-2">

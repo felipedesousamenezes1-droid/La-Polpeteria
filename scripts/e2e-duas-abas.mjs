@@ -81,7 +81,7 @@ try {
   await garcom.click('[data-testid^=combo-principal-]:has-text("Risotto alla Pera")'); // prato principal
   await shot(garcom, '03-garcom-menu-completo');
   await garcom.click('[data-testid^=combo-sobremesa-]:has-text("Tiramisu")'); // sobremesa: entra no pedido sozinho
-  await garcom.click('button[data-testid^=item-]:has-text("Refrigerante lata")');
+  await garcom.click('button[data-testid^=item-]:has-text("Coca-Cola lata")');
   await shot(garcom, '02-garcom-cardapio');
   const t0 = Date.now();
   await garcom.click('[data-testid=enviar-cozinha]'); // toque 3: envia
@@ -130,7 +130,7 @@ try {
   await caixa.click('[data-testid=conta-mesa-5]');
   await caixa.waitForSelector('[data-testid=total-conta]');
   const total = (await caixa.textContent('[data-testid=total-conta]')).replace(/\s/g, ' ').trim();
-  assert(/R\$\s?140,00/.test(total), `conta da mesa 5 = ${total} (Menu Completo R$ 130 + refrigerante R$ 10)`);
+  assert(/R\$\s?138,00/.test(total), `conta da mesa 5 = ${total} (Menu Completo R$ 130 + Coca-Cola R$ 8)`);
   await shot(caixa, '08-caixa-conta');
   await caixa.click('[data-testid=fechar-conta]');
   await caixa.click('button:has-text("Fechar · R$")');
@@ -139,6 +139,18 @@ try {
   await garcom.waitForFunction(() => document.querySelector('[data-testid=mesa-5]')?.dataset.status === 'livre');
   ok('mesa 5 voltou a "Livre" no aparelho do garçom em tempo real');
   await shot(garcom, '01-garcom-mesas');
+
+  // ---------------- Proprietário: painel de vendas
+  const donoCtx = await browser.newContext({ viewport: { width: 1280, height: 1800 }, deviceScaleFactor: 1 });
+  const dono = await donoCtx.newPage();
+  dono.on('pageerror', (e) => errors.push(`proprietário: ${e.message}`));
+  await login(dono, server.base, '5555');
+  await dono.click('button:has-text("Hoje")');
+  await dono.waitForSelector('[data-testid=kpis]');
+  const kpis = await dono.textContent('[data-testid=kpis]');
+  assert(kpis.includes('R$') && kpis.includes('206,00'), 'painel do Proprietário mostra as vendas do dia (R$ 206,00)');
+  assert((await dono.locator('[data-testid=tabela-produtos] tbody tr:has-text("Menu Completo")').count()) === 1, 'tabela de produtos lista o Menu Completo');
+  await shot(dono, '09-proprietario-painel');
 
   assert(errors.length === 0, `sem erros de JavaScript nas páginas${errors.length ? `: ${errors.join(' | ')}` : ''}`);
   console.log(`\nResultado: ${results.length} verificações OK\n`);

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { ROLES } from '../shared/constants.js';
+import { ROLES, MANAGER_ROLES } from '../shared/constants.js';
 import { HttpError, nowIso, cleanText } from './util.js';
 
 export function hashPin(pin) {
@@ -75,13 +75,18 @@ export function createAuth({ db, audit }) {
     cache.delete(actor.token);
   }
 
+  /** Autorizações que exigem "PIN de Admin" aceitam também o PIN do Proprietário. */
   function verifyAdminPin(pin) {
-    return PIN_RE.test(String(pin ?? '')) && verifyPin(String(pin), getSetting.get('pin_admin'));
+    if (!PIN_RE.test(String(pin ?? ''))) return false;
+    return MANAGER_ROLES.some((r) => verifyPin(String(pin), getSetting.get(`pin_${r}`)));
   }
 
   /** Troca o PIN de um perfil e encerra as sessões existentes desse perfil. */
   function changePin(actor, role, newPin) {
     if (!ROLES.includes(role)) throw new HttpError(400, 'BAD_ROLE', 'Perfil inválido.');
+    if (role === 'dono' && actor.role !== 'dono') {
+      throw new HttpError(403, 'FORBIDDEN', 'Somente o Proprietário pode trocar o próprio PIN.');
+    }
     if (!PIN_RE.test(String(newPin ?? ''))) throw new HttpError(400, 'BAD_PIN', 'O PIN deve ter de 4 a 8 dígitos.');
     for (const other of ROLES) {
       if (other !== role && verifyPin(String(newPin), getSetting.get(`pin_${other}`))) {
@@ -90,10 +95,10 @@ export function createAuth({ db, audit }) {
     }
     db.transaction(() => {
       setSetting.run(`pin_${role}`, hashPin(String(newPin)));
-      if (role !== 'admin') revokeRoleStmt.run(nowIso(), role);
-      audit.log(actor, 'settings.pin_change', 'role', role, { sessoesEncerradas: role !== 'admin' });
+      if (!MANAGER_ROLES.includes(role)) revokeRoleStmt.run(nowIso(), role);
+      audit.log(actor, 'settings.pin_change', 'role', role, { sessoesEncerradas: !MANAGER_ROLES.includes(role) });
     })();
-    for (const [token, s] of cache) if (s.role === role && role !== 'admin') cache.delete(token);
+    for (const [token, s] of cache) if (s.role === role && !MANAGER_ROLES.includes(role)) cache.delete(token);
   }
 
   return { login, logout, getSession, verifyAdminPin, changePin };

@@ -8,12 +8,14 @@ import WaiterScreen from './screens/waiter/WaiterScreen.jsx';
 import KitchenScreen from './screens/kitchen/KitchenScreen.jsx';
 import CashierScreen from './screens/cashier/CashierScreen.jsx';
 import AdminScreen from './screens/admin/AdminScreen.jsx';
+import OwnerScreen from './screens/owner/OwnerScreen.jsx';
 
 const SCREENS = {
   garcom: WaiterScreen,
   cozinha: KitchenScreen,
   caixa: CashierScreen,
   admin: AdminScreen,
+  dono: OwnerScreen,
 };
 
 function Loading() {
@@ -29,7 +31,9 @@ function Loading() {
 
 export default function App() {
   const s = useAppState();
-  const screen = s.session ? (s.session.role === 'admin' ? s.screen || 'admin' : s.session.role) : null;
+  const role = s.session?.role;
+  const allowed = role === 'dono' ? ['dono', 'admin', 'garcom', 'cozinha', 'caixa'] : role === 'admin' ? ['admin', 'garcom', 'cozinha', 'caixa'] : [role];
+  const screen = role ? (allowed.includes(s.screen) ? s.screen : allowed[0]) : null;
 
   // Garçom: som + vibração + faixa de alerta quando a cozinha marca "pronto".
   useEffect(() => {

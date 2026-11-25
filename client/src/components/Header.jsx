@@ -54,6 +54,7 @@ export function SyncStatus() {
 }
 
 const SCREENS = [
+  ['dono', 'Relatórios'],
   ['admin', 'Admin'],
   ['garcom', 'Garçom'],
   ['cozinha', 'Cozinha'],
@@ -75,9 +76,9 @@ export function Header({ screen }) {
         </span>
         <div className="ml-auto flex min-w-0 items-center gap-2">
           <SyncStatus />
-          {role === 'admin' && (
+          {(role === 'admin' || role === 'dono') && (
             <select className="input !min-h-10 !w-auto !py-0 text-sm font-semibold" value={screen} onChange={(e) => setScreen(e.target.value)} aria-label="Trocar tela">
-              {SCREENS.map(([k, l]) => (
+              {SCREENS.filter(([k]) => role === 'dono' || k !== 'dono').map(([k, l]) => (
                 <option key={k} value={k}>
                   {l}
                 </option>

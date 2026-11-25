@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { CATEGORIES, QUICK_NOTES, TAB_STATUS_LABELS, COMBO_CATEGORY, COMBO_STEPS } from '../../../../shared/constants.js';
+import { MENU_GROUPS, QUICK_NOTES, TAB_STATUS_LABELS, COMBO_CATEGORY, COMBO_STEPS } from '../../../../shared/constants.js';
 import { useAppState, addToDraft, setDraft, submitDraft, activeTabFor, toast, getState } from '../../lib/store.js';
 import { money, normalize, vibrate } from '../../lib/util.js';
 import { Icon, Modal, QtyStepper, ComboParts } from '../../components/ui.jsx';
@@ -68,7 +68,8 @@ function MenuPicker({ table, lines }) {
     addToDraft(table, m);
     vibrate(12);
   }
-  const [cat, setCat] = useState('Todos');
+  const [sel, setSel] = useState('todos');
+  const groupTitle = (g) => (g.key === 'proposta' ? s.settings.proposalTitle || g.title : g.title);
   const [query, setQuery] = useState('');
   const qtyByItem = useMemo(() => {
     const m = new Map();
@@ -80,17 +81,20 @@ function MenuPicker({ table, lines }) {
     const active = s.menu.filter((m) => m.active);
     const q = normalize(query.trim());
     if (q) return active.filter((m) => normalize(`${m.name} ${m.description}`).includes(q));
-    return cat === 'Todos' ? active : active.filter((m) => m.category === cat);
-  }, [s.menu, cat, query]);
+    if (sel === 'todos') return active;
+    const cats = MENU_GROUPS.find((g) => g.key === sel)?.categories || [];
+    return active.filter((m) => cats.includes(m.category));
+  }, [s.menu, sel, query]);
 
-  const groups = useMemo(() => {
-    const g = [];
-    for (const c of CATEGORIES) {
-      const list = items.filter((m) => m.category === c);
-      if (list.length) g.push([c, list]);
-    }
-    return g;
-  }, [items]);
+  // Seções do cardápio da casa: grupo (Bebidas, Proposta, Vinhos) → categoria → itens.
+  const groups = useMemo(
+    () =>
+      MENU_GROUPS.map((g) => ({
+        ...g,
+        cats: g.categories.map((c) => [c, items.filter((m) => m.category === c)]).filter(([, l]) => l.length),
+      })).filter((g) => g.cats.length),
+    [items],
+  );
 
   return (
     <>
@@ -105,23 +109,26 @@ function MenuPicker({ table, lines }) {
           )}
         </div>
         <div className="-mx-3 flex gap-2 overflow-x-auto px-3 pb-1 [scrollbar-width:none]">
-          {['Todos', ...CATEGORIES].map((c) => (
+          {[{ key: 'todos', title: 'Todos' }, ...MENU_GROUPS].map((g) => (
             <button
-              key={c}
+              key={g.key}
               onClick={() => {
-                setCat(c);
+                setSel(g.key);
                 setQuery('');
               }}
-              className={`chip ${cat === c && !query ? 'border-basilico-700 bg-basilico-700 text-white' : 'border-crema-300 bg-crema-50 text-inchiostro'}`}
+              className={`chip ${sel === g.key && !query ? 'border-basilico-700 bg-basilico-700 text-white' : 'border-crema-300 bg-crema-50 text-inchiostro'}`}
             >
-              {c}
+              {g.key === 'todos' ? 'Todos' : groupTitle(g)}
             </button>
           ))}
         </div>
       </div>
       <div className="flex-1 overflow-y-auto px-3 pt-2 pb-4">
         {groups.length === 0 && <p className="py-10 text-center text-seppia">Nenhum item encontrado.</p>}
-        {groups.map(([c, list]) => (
+        {groups.map((g) => (
+          <div key={g.key} className="mb-2">
+            <h2 className="mt-1 mb-1 text-center font-serif text-2xl font-bold tracking-wide text-basilico-800 uppercase">{groupTitle(g)}</h2>
+        {g.cats.map(([c, list]) => (
           <section key={c} className="mb-3">
             <h3 className="sticky top-0 z-10 -mx-3 flex items-center gap-3 bg-crema-100 px-3 py-1 font-serif text-xl font-semibold text-pomodoro-700">
               {c}
@@ -153,6 +160,8 @@ function MenuPicker({ table, lines }) {
             </div>
           </section>
         ))}
+          </div>
+        ))}
       </div>
       {combo && <ComboPicker combo={combo} table={table} onClose={() => setCombo(null)} />}
     </>
@@ -160,7 +169,7 @@ function MenuPicker({ table, lines }) {
 }
 
 function NoteEditor({ line, onChange }) {
-  const quick = [...(QUICK_NOTES[line.category] || []), ...QUICK_NOTES.geral];
+  const quick = QUICK_NOTES[line.category] || [];
   const parts = line.notes ? line.notes.split(', ').filter(Boolean) : [];
   const toggle = (n) => {
     const next = parts.includes(n) ? parts.filter((p) => p !== n) : [...parts, n];

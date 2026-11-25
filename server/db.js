@@ -169,22 +169,33 @@ WHEN NEW.qty + (SELECT COALESCE(SUM(qty), 0) FROM cancellations WHERE order_item
 BEGIN SELECT RAISE(ABORT, 'PROTEGIDO: quantidade cancelada maior que a enviada'); END;
 `;
 
-const MIGRATIONS = [SCHEMA_V1];
+// V2: itens do cardápio podem ser excluídos se nunca foram pedidos; os já pedidos são arquivados.
+const SCHEMA_V2 = `
+ALTER TABLE menu_items ADD COLUMN archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1));
+DROP TRIGGER menu_items_no_delete;
+CREATE TRIGGER menu_items_no_delete BEFORE DELETE ON menu_items
+WHEN EXISTS (SELECT 1 FROM order_items WHERE menu_item_id = OLD.id)
+BEGIN SELECT RAISE(ABORT, 'PROTEGIDO: item que já consta em pedidos não pode ser apagado (é arquivado)'); END;
+CREATE INDEX audit_log_entity ON audit_log (entity_id);
+`;
 
-export function openDatabase(file) {
+export const MIGRATIONS = [SCHEMA_V1, SCHEMA_V2];
+
+/** targetVersion existe apenas para os testes simularem um banco antigo. */
+export function openDatabase(file, { targetVersion = MIGRATIONS.length } = {}) {
   const db = new Database(file);
   // WAL + synchronous=FULL: cada transação confirmada está no disco antes da resposta ao aparelho.
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = FULL');
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
-  migrate(db);
+  migrate(db, targetVersion);
   return db;
 }
 
-function migrate(db) {
+function migrate(db, targetVersion) {
   const current = db.pragma('user_version', { simple: true });
-  for (let v = current; v < MIGRATIONS.length; v++) {
+  for (let v = current; v < targetVersion; v++) {
     db.transaction(() => {
       db.exec(MIGRATIONS[v]);
       db.pragma(`user_version = ${v + 1}`);

@@ -55,16 +55,19 @@ describe('Backup e recuperação', () => {
     assert.equal((await admin2.get('/api/admin/audit/verify')).data.ok, true);
   });
 
-  test('"Exportar dia" gera CSV e JSON coerentes com o histórico', { timeout: 30_000 }, async () => {
+  test('relatório do Proprietário gera CSV e JSON coerentes com o histórico', { timeout: 30_000 }, async () => {
     const dataDir = tmpDataDir('export');
     const srv = await startServer({ dataDir });
     servers.push(srv);
     const garcom = await login(srv.base, 'garcom');
-    const admin = await login(srv.base, 'admin');
+    const dono = await login(srv.base, 'dono');
     const o = (await garcom.post('/api/orders', newOrder(4, [[ID.risotto, 2, 'sem queijo; "extra"'], [ID.refri, 1]]))).data.order;
     await garcom.post(`/api/items/${o.items[1].id}/cancel`, { cancellationId: crypto.randomUUID(), qty: 1, reason: 'Cliente desistiu' });
 
-    const csvRes = await fetch(`${srv.base}/api/admin/export?format=csv`, { headers: { Authorization: `Bearer ${admin.token}` } });
+    const admin = await login(srv.base, 'admin');
+    const old = await fetch(`${srv.base}/api/admin/export?format=csv`, { headers: { Authorization: `Bearer ${admin.token}` } });
+    assert.equal(old.status, 404, 'Admin não tem mais "Exportar dia"');
+    const csvRes = await fetch(`${srv.base}/api/owner/export?format=csv`, { headers: { Authorization: `Bearer ${dono.token}` } });
     assert.equal(csvRes.status, 200);
     assert.match(csvRes.headers.get('content-disposition'), /attachment/);
     const csv = await csvRes.text();
@@ -72,13 +75,16 @@ describe('Backup e recuperação', () => {
     assert.equal(rows.length, 3, 'cabeçalho + 2 itens');
     assert.match(rows[0], /^data;pedido_n;mesa/);
     assert.match(csv, /"sem queijo; ""extra"""/, 'campos com ; e aspas escapados');
-    assert.match(rows[2], /;1;1;0;10,00;0,00;/, 'refrigerante: 1 enviado, 1 cancelado, 0 válido');
+    const unit = (PRICE.refri / 100).toFixed(2).replace('.', ',');
+    assert.ok(rows[2].includes(`;1;1;0;${unit};0,00;`), 'refrigerante: 1 enviado, 1 cancelado, 0 válido');
 
-    const json = await (await fetch(`${srv.base}/api/admin/export?format=json`, { headers: { Authorization: `Bearer ${admin.token}` } })).json();
-    assert.equal(json.pedidos.length, 1);
-    assert.equal(json.contas[0].conta.totalCents, 2 * PRICE.risotto);
-    assert.equal(json.cancelamentos.length, 1);
-    assert.ok(json.auditoria.some((e) => e.action === 'item.cancel'));
+    const json = await (await fetch(`${srv.base}/api/owner/export?format=json`, { headers: { Authorization: `Bearer ${dono.token}` } })).json();
+    const dia = json.dias[0];
+    assert.equal(dia.pedidos.length, 1);
+    assert.equal(dia.contas[0].conta.totalCents, 2 * PRICE.risotto);
+    assert.equal(dia.cancelamentos.length, 1);
+    assert.ok(dia.auditoria.some((e) => e.action === 'item.cancel'));
+    assert.equal(json.relatorio.kpis.salesCents, 2 * PRICE.risotto);
   });
 });
 
