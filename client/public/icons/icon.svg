@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#fbf7ef"/>
+  <rect x="0" y="440" width="171" height="72" fill="#2f6b3a"/>
+  <rect x="171" y="440" width="170" height="72" fill="#ffffff"/>
+  <rect x="341" y="440" width="171" height="72" fill="#c0392b"/>
+  <circle cx="256" cy="220" r="150" fill="none" stroke="#c9a44c" stroke-width="10"/>
+  <text x="256" y="292" text-anchor="middle" font-family="Georgia, 'Playfair Display', serif" font-size="220" font-style="italic" font-weight="700" fill="#255530">P</text>
+</svg>

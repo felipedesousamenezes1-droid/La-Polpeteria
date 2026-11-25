@@ -1,0 +1,156 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-serif: 'Playfair Display', Georgia, 'Times New Roman', serif;
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+
+  /* Verde basilico */
+  --color-basilico-50: #eef5ef;
+  --color-basilico-100: #d8eadb;
+  --color-basilico-200: #b3d4b8;
+  --color-basilico-500: #3d8049;
+  --color-basilico-600: #2f6b3a;
+  --color-basilico-700: #255530;
+  --color-basilico-800: #1b4024;
+  --color-basilico-900: #122b18;
+
+  /* Vermelho pomodoro */
+  --color-pomodoro-50: #fdeeec;
+  --color-pomodoro-100: #f9d6d1;
+  --color-pomodoro-200: #f0aaa1;
+  --color-pomodoro-500: #d24a3b;
+  --color-pomodoro-600: #c0392b;
+  --color-pomodoro-700: #9c2d22;
+  --color-pomodoro-800: #7a231b;
+
+  /* Creme de fundo */
+  --color-crema-50: #fffdf9;
+  --color-crema-100: #fbf7ef;
+  --color-crema-200: #f4ecdd;
+  --color-crema-300: #e8dbc4;
+  --color-crema-400: #d6c4a5;
+
+  /* Dourado suave */
+  --color-oro-100: #f7eed4;
+  --color-oro-200: #efdfae;
+  --color-oro-300: #e4c97f;
+  --color-oro-400: #d6b25c;
+  --color-oro-500: #c9a44c;
+  --color-oro-600: #a8862f;
+  --color-oro-700: #7d6322;
+
+  /* Texto */
+  --color-inchiostro: #2a221d;
+  --color-seppia: #6b5a4c;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-crema-100 text-inchiostro font-sans antialiased;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior-y: none;
+  }
+  button {
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+  input,
+  select,
+  textarea {
+    @apply text-inchiostro;
+    font-size: 16px; /* evita zoom automático no iOS */
+  }
+}
+
+@utility btn {
+  @apply inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 text-base font-semibold select-none
+    transition-[transform,background-color] duration-75 active:scale-[0.97] disabled:opacity-50 disabled:active:scale-100;
+}
+@utility btn-primary {
+  @apply btn bg-basilico-700 text-white shadow-sm hover:bg-basilico-800 active:bg-basilico-900;
+}
+@utility btn-danger {
+  @apply btn bg-pomodoro-600 text-white shadow-sm hover:bg-pomodoro-700 active:bg-pomodoro-800;
+}
+@utility btn-gold {
+  @apply btn bg-oro-400 text-inchiostro shadow-sm hover:bg-oro-500;
+}
+@utility btn-ghost {
+  @apply btn border-2 border-crema-300 bg-crema-50 text-inchiostro hover:bg-crema-200 active:bg-crema-300;
+}
+@utility card {
+  @apply rounded-2xl border border-crema-300 bg-crema-50 shadow-sm;
+}
+@utility chip {
+  @apply inline-flex min-h-12 items-center rounded-full border-2 px-4 text-sm font-semibold whitespace-nowrap select-none
+    transition-transform duration-75 active:scale-95;
+}
+@utility input {
+  @apply min-h-12 w-full rounded-xl border-2 border-crema-300 bg-white px-3 outline-none focus:border-basilico-600;
+}
+@utility label {
+  @apply mb-1 block text-sm font-semibold text-seppia;
+}
+@utility tricolore {
+  background: linear-gradient(
+    90deg,
+    var(--color-basilico-600) 0 33.33%,
+    #ffffff 33.33% 66.66%,
+    var(--color-pomodoro-600) 66.66% 100%
+  );
+}
+
+/* Destaque breve para pedido recém-chegado (leve, sem animação pesada) */
+@keyframes chegou {
+  from {
+    box-shadow: 0 0 0 6px var(--color-oro-400);
+  }
+  to {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+.flash-new {
+  animation: chegou 1.6s ease-out 2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flash-new {
+    animation: none;
+  }
+  .btn,
+  .chip {
+    transition: none;
+  }
+}
+
+/* Impressão do resumo da conta: só a área de impressão aparece */
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+  .print-area,
+  .print-area * {
+    visibility: visible !important;
+  }
+  .print-area {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 80mm;
+    padding: 4mm;
+    background: white;
+    color: black;
+    font-size: 11pt;
+  }
+  @page {
+    margin: 4mm;
+  }
+}
