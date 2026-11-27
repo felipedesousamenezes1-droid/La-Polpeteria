@@ -175,6 +175,17 @@ export function createOutbox({
     await save({ ...e, status: 'discarded', discardedAt: now() });
   }
 
+  /** Remove do aparelho os registros que satisfazem o critério (ex.: criados antes de apagar os dados de teste). */
+  async function purgeWhere(predicate) {
+    for (const e of [...entries.values()]) {
+      if (predicate(e)) {
+        await storage.delete(e.id);
+        entries.delete(e.id);
+      }
+    }
+    notify();
+  }
+
   /** Limpa do aparelho registros já confirmados pelo servidor há mais de maxAgeMs. */
   async function prune(maxAgeMs = 24 * 3600_000) {
     const limit = now() - maxAgeMs;
@@ -196,6 +207,7 @@ export function createOutbox({
     resendRejected,
     discard,
     prune,
+    purgeWhere,
     snapshot,
     get: (id) => entries.get(id),
     isRetryScheduled: () => !!timer,

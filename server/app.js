@@ -221,6 +221,15 @@ export async function createApp(config = loadConfig(), { logger = console } = {}
     res.json(services.report(from, to));
   });
   owner.get('/history', (req, res) => res.json(services.history(req.query.date || localDate())));
+  owner.post('/reset', async (req, res) => {
+    services.checkReset(req.actor, req.body || {});
+    const backupName = await backups.backupNow('antes-de-zerar'); // cópia completa antes de apagar
+    const result = services.resetOperationalData(req.actor, { backupName });
+    // Relatórios diários já gerados a partir dos testes também saem (o backup guarda tudo).
+    for (const f of fs.readdirSync(backups.exportDir)) fs.rmSync(path.join(backups.exportDir, f), { force: true });
+    logger.log(`[zerar] dados de teste apagados; backup: ${backupName}`);
+    res.json(result);
+  });
   owner.get('/export', (req, res) => {
     const { from, to } = period(req);
     const format = req.query.format === 'csv' ? 'csv' : 'json';

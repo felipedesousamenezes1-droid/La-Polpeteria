@@ -81,6 +81,10 @@ export function createAuth({ db, audit }) {
     return MANAGER_ROLES.some((r) => verifyPin(String(pin), getSetting.get(`pin_${r}`)));
   }
 
+  function verifyPinForRole(role, pin) {
+    return PIN_RE.test(String(pin ?? '')) && verifyPin(String(pin), getSetting.get(`pin_${role}`));
+  }
+
   /** Troca o PIN de um perfil e encerra as sessões existentes desse perfil. */
   function changePin(actor, role, newPin) {
     if (!ROLES.includes(role)) throw new HttpError(400, 'BAD_ROLE', 'Perfil inválido.');
@@ -101,5 +105,5 @@ export function createAuth({ db, audit }) {
     for (const [token, s] of cache) if (s.role === role && !MANAGER_ROLES.includes(role)) cache.delete(token);
   }
 
-  return { login, logout, getSession, verifyAdminPin, changePin };
+  return { login, logout, getSession, verifyAdminPin, verifyPinForRole, changePin };
 }

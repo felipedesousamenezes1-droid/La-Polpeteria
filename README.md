@@ -97,6 +97,17 @@ Os navegadores só ativam todos os recursos de PWA, entre eles o cache da interf
 | Backup e recuperação | Backup online do SQLite **a cada 10 minutos** (quando houve movimento) e na inicialização, mantendo os **últimos 50** em `data/backups/`. Exportação automática do dia anterior em **CSV e JSON** em `data/exports/`. Botão "Fazer backup agora" no Admin; relatórios em planilha (Excel/JSON) na tela do Proprietário. |
 | Reinício do servidor | Sessões ficam no banco: após reiniciar, os aparelhos reconectam sozinhos, sem novo PIN, baixam o estado completo e enviam o que estava pendente. |
 
+### Começar a operação do zero (uma única vez)
+
+Depois dos testes e antes de abrir para clientes, o **Proprietário** entra em **Relatórios → Zerar dados de teste**, digita o próprio PIN e a palavra **ZERAR**. O sistema:
+
+1. faz um **backup completo** (`data/backups/…_antes-de-zerar.sqlite`);
+2. apaga pedidos, contas (inclusive abertas), cancelamentos, fila da cozinha, auditoria e relatórios gerados;
+3. mantém cardápio, seções, configurações, PINs e os aparelhos conectados;
+4. avisa todos os aparelhos, que descartam rascunhos e pedidos de teste guardados localmente (inclusive celulares que estavam offline: ao voltar, sincronizam antes de reenviar qualquer coisa);
+5. começa uma auditoria nova, cujo primeiro registro é a própria limpeza (quem, quando e qual backup);
+6. **desativa a opção**: a partir daí os dados reais não podem ser apagados. Em caso excepcional, ela só volta definindo a variável `ALLOW_RESET=1` no servidor.
+
 ### Restaurar um backup
 
 1. Pare o servidor (Ctrl+C).
@@ -151,8 +162,8 @@ Entre com o PIN do Proprietário. A tela **Relatórios** tem dois painéis:
 ## Testes
 
 ```bash
-npm test       # 40 testes: pedidos, tempos da cozinha, taxa de serviço, cardápio editável, relatórios e os 5 cenários críticos
-npm run e2e    # navegador real (27 verificações): garçom, cozinha, caixa, Proprietário e Admin, com queda de rede
+npm test       # 41 testes: pedidos, tempos da cozinha, taxa de serviço, cardápio editável, relatórios e os 5 cenários críticos
+npm run e2e    # navegador real (34 verificações): garçom, cozinha, caixa, Proprietário e Admin, com queda de rede
 ```
 
 `npm test` sobe o servidor real em processos separados e cobre:
@@ -176,6 +187,7 @@ O `npm run e2e` requer Playwright com Chromium (`npx playwright install chromium
 | `BACKUP_INTERVAL_MINUTES` | `10` | Intervalo dos backups automáticos |
 | `BACKUP_KEEP` | `50` | Quantidade de backups mantidos |
 | `HTTPS_KEY` / `HTTPS_CERT` | — | Caminhos do certificado para servir em HTTPS |
+| `ALLOW_RESET` | — | `1` reativa "Zerar dados de teste" depois de já usado (excepcional) |
 
 ## Estrutura
 

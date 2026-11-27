@@ -418,10 +418,91 @@ function HistoryPanel() {
   );
 }
 
+// ------------------------------------------------------------------ começar a operação do zero
+
+function ResetPanel({ onDone }) {
+  const [pin, setPin] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [result, setResult] = useState(null);
+
+  async function run() {
+    setBusy(true);
+    setError('');
+    try {
+      const r = await api('/api/owner/reset', { method: 'POST', body: { pin, confirm }, timeout: 60000 });
+      setResult(r);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (result) {
+    const r = result.removed;
+    return (
+      <section className="card mx-auto max-w-xl border-basilico-200 p-5" data-testid="zerar-ok">
+        <h2 className="font-serif text-2xl font-bold text-basilico-800">Pronto: operação começando do zero</h2>
+        <ul className="mt-3 space-y-1">
+          <li>{r.orders} pedido(s) de teste apagado(s)</li>
+          <li>{r.tabs} conta(s) apagada(s), inclusive as abertas</li>
+          <li>{r.audit_log} registro(s) de auditoria apagado(s)</li>
+        </ul>
+        <p className="mt-3 text-sm text-seppia">
+          Cópia de segurança feita antes da limpeza: <code className="break-all">{result.backup}</code>. Cardápio, seções, configurações e PINs foram mantidos. A partir de agora os dados reais ficam protegidos e esta opção não aparece mais.
+        </p>
+        <button className="btn-primary mt-4" onClick={onDone}>
+          Ir para o painel
+        </button>
+      </section>
+    );
+  }
+
+  return (
+    <section className="card mx-auto max-w-xl border-pomodoro-200 p-5">
+      <h2 className="font-serif text-2xl font-bold text-pomodoro-800">Começar a operação do zero</h2>
+      <p className="mt-2">Use uma única vez, antes de abrir para clientes, para apagar tudo o que foi feito em testes:</p>
+      <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
+        <li>
+          <strong>Apaga:</strong> todos os pedidos, contas (inclusive as abertas), cancelamentos, a fila da cozinha e toda a auditoria; também os pedidos de teste guardados nos celulares.
+        </li>
+        <li>
+          <strong>Mantém:</strong> cardápio, seções, configurações, PINs e os aparelhos conectados.
+        </li>
+        <li>
+          <strong>Segurança:</strong> antes de apagar, o sistema faz uma cópia completa (backup). Depois disso, a opção é desativada e os dados reais não podem mais ser apagados.
+        </li>
+      </ul>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <div>
+          <label className="label" htmlFor="zerar-pin">Seu PIN de Proprietário</label>
+          <input id="zerar-pin" className="input" type="password" inputMode="numeric" maxLength={8} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))} />
+        </div>
+        <div>
+          <label className="label" htmlFor="zerar-confirma">Digite ZERAR para confirmar</label>
+          <input id="zerar-confirma" className="input uppercase" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="off" />
+        </div>
+      </div>
+      {error && <p className="mt-3 font-semibold text-pomodoro-700" role="alert">{error}</p>}
+      <button className="btn-danger mt-4 w-full" disabled={busy || pin.length < 4 || confirm.trim().toUpperCase() !== 'ZERAR'} onClick={run} data-testid="zerar-executar">
+        {busy ? 'Fazendo backup e apagando…' : 'Apagar dados de teste e começar'}
+      </button>
+    </section>
+  );
+}
+
 export default function OwnerScreen() {
+  const s = useAppState();
+  const canReset = !s.settings.operationStartedAt;
   const [tab, setTab] = useState(() => localStorage.getItem('polpeteria.ownerTab') || 'vendas');
+  // A aba de limpeza fica aberta até o usuário sair dela (o aviso de "operação iniciada" pode chegar
+  // pelo tempo real antes da resposta do botão).
+  const [resetShown, setResetShown] = useState(() => tab === 'zerar' && !s.settings.operationStartedAt);
   const select = (t) => {
     setTab(t);
+    setResetShown(t === 'zerar' && (!s.settings.operationStartedAt || resetShown));
     try {
       localStorage.setItem('polpeteria.ownerTab', t);
     } catch {
@@ -434,13 +515,22 @@ export default function OwnerScreen() {
         {[
           ['vendas', 'Painel de vendas'],
           ['dia', 'Dia a dia'],
+          ...(canReset || resetShown ? [['zerar', 'Zerar dados de teste']] : []),
         ].map(([k, l]) => (
           <button key={k} onClick={() => select(k)} className={`chip ${tab === k ? 'border-basilico-700 bg-basilico-700 text-white' : 'border-crema-300 bg-white'}`}>
             {l}
           </button>
         ))}
       </nav>
-      <main className="mx-auto w-full max-w-6xl flex-1 overflow-y-auto p-3 sm:p-5">{tab === 'vendas' ? <SalesPanel /> : <HistoryPanel />}</main>
+      <main className="mx-auto w-full max-w-6xl flex-1 overflow-y-auto p-3 sm:p-5">
+        {tab === 'zerar' && (canReset || resetShown) ? (
+          <ResetPanel onDone={() => select('vendas')} />
+        ) : tab === 'dia' ? (
+          <HistoryPanel />
+        ) : (
+          <SalesPanel />
+        )}
+      </main>
     </div>
   );
 }

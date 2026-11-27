@@ -192,6 +192,39 @@ try {
   assert((await dono.locator('[data-testid="secao-Outros"]:has-text("Taxa de rolha")').count()) === 1, 'Admin: seção "Outros" com a taxa de rolha');
   await shot(dono, '11-admin-cardapio');
 
+  // ---------------- Começar a operação do zero (Proprietário), com um celular offline guardando um pedido de teste
+  await waiterCtx.setOffline(true);
+  await garcom.click('[data-testid=mesa-9]');
+  await garcom.click('button[data-testid^=item-]:has-text("Tiramisu")');
+  await garcom.click('[data-testid=enviar-cozinha]');
+  await garcom.waitForSelector('[data-testid=sync-status]:has-text("1 pedido pendente")');
+  await garcom.waitForTimeout(6000);
+  await dono.selectOption('select[aria-label="Trocar tela"]', 'dono');
+  await dono.click('button:has-text("Zerar dados de teste")');
+  await dono.fill('#zerar-pin', '5555');
+  await dono.fill('#zerar-confirma', 'ZERAR');
+  await shot(dono, '13-zerar-antes');
+  await dono.click('[data-testid=zerar-executar]');
+  await dono.waitForSelector('[data-testid=zerar-ok]');
+  ok('Proprietário apagou os dados de teste (PIN + ZERAR, com backup antes)');
+  await cozinha.waitForFunction(() => !document.querySelector('article'));
+  ok('quadro da cozinha ficou vazio na hora');
+  await caixa.waitForFunction(() => !document.querySelector('[data-testid^=conta-mesa-]'));
+  ok('caixa sem contas (inclusive as abertas)');
+  await waiterCtx.setOffline(false);
+  await garcom.waitForSelector('[data-testid=sync-status]:has-text("Sincronizado")', { timeout: 15000 });
+  await cozinha.waitForTimeout(2500);
+  assert((await cozinha.locator('article:has-text("Mesa 9")').count()) === 0, 'pedido de teste que estava no celular offline NÃO foi reenviado');
+  assert((await garcom.getAttribute('[data-testid=mesa-9]', 'data-status')) === 'livre', 'mesa 9 livre no garçom');
+  await garcom.click('[data-testid=mesa-2]');
+  await garcom.click('button[data-testid^=item-]:has-text("Rotolini di Zucchine")');
+  await garcom.click('[data-testid=enviar-cozinha]');
+  await cozinha.waitForSelector('article:has-text("Mesa 2")');
+  assert((await cozinha.textContent('article:has-text("Mesa 2")')).includes('#1 ·'), 'primeiro pedido real chega à cozinha como #1');
+  await dono.click('button:has-text("Ir para o painel")');
+  await dono.waitForFunction(() => !Array.from(document.querySelectorAll('nav button')).some((b) => b.textContent.includes('Zerar')));
+  ok('opção de zerar desaparece depois de usada');
+
   assert(errors.length === 0, `sem erros de JavaScript nas páginas${errors.length ? `: ${errors.join(' | ')}` : ''}`);
   console.log(`\nResultado: ${results.length} verificações OK\n`);
 } catch (err) {

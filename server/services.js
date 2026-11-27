@@ -98,6 +98,8 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       warnMinutes: Number(q.getSetting.get('warn_minutes')),
       lateMinutes: Number(q.getSetting.get('late_minutes')),
       proposalTitle: q.getSetting.get('proposal_title') || 'Proposta do mês',
+      operationStartedAt: q.getSetting.get('operation_started_at') || null,
+      resetId: q.getSetting.get('reset_id') || null,
       serviceDefault: q.getSetting.get('service_default') !== '0',
       servicePct: Number(q.getSetting.get('service_pct') ?? 10),
       // Minutos depois que o tempo anterior fica PRONTO na cozinha.
@@ -1269,7 +1271,59 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     };
   }
 
+  // ---------------------------------------------------------------- começar a operação do zero
+
+  const RESET_TABLES = ['cancellations', 'kitchen_tickets', 'order_items', 'orders', 'tabs', 'audit_log'];
+
+  /** Validações da limpeza dos dados de teste (antes do backup). Uso único, salvo ALLOW_RESET=1. */
+  function checkReset(actor, { pin, confirm } = {}) {
+    if (actor.role !== 'dono') throw new HttpError(403, 'FORBIDDEN', 'Somente o Proprietário pode zerar os dados.');
+    if (String(confirm || '').trim().toUpperCase() !== 'ZERAR') {
+      throw new HttpError(400, 'CONFIRM_REQUIRED', 'Digite ZERAR para confirmar.');
+    }
+    if (!auth.verifyPinForRole('dono', pin)) {
+      db.transaction(() => audit.log(actor, 'system.reset_denied', 'database', null, { motivo: 'PIN do Proprietário incorreto' }))();
+      throw new HttpError(403, 'OWNER_PIN_REQUIRED', 'PIN do Proprietário incorreto.');
+    }
+    if (q.getSetting.get('operation_started_at') && process.env.ALLOW_RESET !== '1') {
+      throw new HttpError(409, 'ALREADY_RESET', 'Os dados de teste já foram apagados e a operação já começou. Os dados reais ficam protegidos.');
+    }
+  }
+
+  /**
+   * Apaga pedidos, contas, cancelamentos, tempos da cozinha e a auditoria (dados de teste) e começa uma
+   * auditoria nova. Mantém cardápio, seções, configurações, PINs e sessões. O backup é feito ANTES (rota).
+   */
+  function resetOperationalData(actor, { backupName }) {
+    const counts = Object.fromEntries(RESET_TABLES.map((t) => [t, db.prepare(`SELECT COUNT(*) FROM ${t}`).pluck().get()]));
+    const resetId = crypto.randomUUID();
+    const now = nowIso();
+    db.transaction(() => {
+      // Os gatilhos de proteção são removidos só durante esta transação e recriados idênticos em seguida.
+      const triggers = db
+        .prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name IN (${RESET_TABLES.map(() => '?').join(', ')})`)
+        .all(...RESET_TABLES);
+      for (const t of triggers) db.exec(`DROP TRIGGER ${t.name}`);
+      for (const table of RESET_TABLES) db.exec(`DELETE FROM ${table}`);
+      db.exec("DELETE FROM sqlite_sequence WHERE name = 'audit_log'");
+      for (const t of triggers) db.exec(t.sql);
+      counts.itensArquivadosRemovidos = db.prepare('DELETE FROM menu_items WHERE archived = 1').run().changes;
+      q.setSetting.run('operation_started_at', now);
+      q.setSetting.run('reset_id', resetId);
+      audit.log(actor, 'system.reset', 'database', null, {
+        acao: 'Dados de teste apagados; início da operação',
+        backupAntes: backupName,
+        removidos: counts,
+      });
+    })();
+    emit('settings:changed', settings());
+    emit('system:reset', { resetId, at: now });
+    return { resetId, at: now, removed: counts, backup: backupName };
+  }
+
   return {
+    checkReset,
+    resetOperationalData,
     report,
     categories,
     createCategory,

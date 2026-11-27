@@ -212,6 +212,33 @@ function hydrateFromCache() {
   set({ loaded: true, rev: 0, today: c.today, settings: c.settings, menu: c.menu, categories: c.categories || [], tabs: byId(c.tabs), orders: byId(c.orders) });
 }
 
+const RESET_KEY = 'polpeteria.resetId';
+
+/**
+ * O Proprietário apagou os dados de teste no servidor: o aparelho esquece pedidos/contas locais,
+ * rascunhos e a fila de envio anteriores ao início da operação (nada de teste é reenviado).
+ */
+/**
+ * Descarta da fila local o que foi criado ANTES do início da operação (horários comparados no relógio do
+ * servidor, com 5 s de folga), preservando qualquer pedido real feito depois.
+ */
+function purgeTestEntries(startIso, offset = state.serverOffset) {
+  if (!startIso || !outbox) return Promise.resolve();
+  const cutoff = Date.parse(startIso) - 5000;
+  return outbox.purgeWhere((e) => (e.createdServerAt ?? e.createdAt + (offset || 0)) < cutoff);
+}
+
+async function applyServerReset(settings, offset) {
+  try {
+    await purgeTestEntries(settings?.operationStartedAt, offset);
+  } catch (err) {
+    console.warn('Falha ao limpar a fila local', err);
+  }
+  writeJson(DRAFTS_KEY, null);
+  writeJson(CACHE_KEY, null);
+  set({ orders: {}, tabs: {}, rev: 0, drafts: {}, readyAlerts: [] });
+}
+
 let refreshing = null;
 export function refreshState() {
   if (!state.session) return Promise.resolve();
@@ -221,6 +248,13 @@ export function refreshState() {
     try {
       const s = await api('/api/state');
       const t1 = Date.now();
+      // Dados de teste apagados enquanto este aparelho estava desligado/offline?
+      const offset = new Date(s.serverTime).getTime() - (t0 + t1) / 2;
+      const serverReset = s.settings?.resetId || 'none';
+      const knownReset = localStorage.getItem(RESET_KEY);
+      if (knownReset && knownReset !== serverReset) await applyServerReset(s.settings, offset);
+      else await purgeTestEntries(s.settings?.operationStartedAt, offset);
+      localStorage.setItem(RESET_KEY, serverReset);
       const prevOrders = state.orders;
       const orders = mergeSnapshot('orders', s.orders, s.rev);
       const tabs = mergeSnapshot('tabs', s.tabs, s.rev);
@@ -238,6 +272,7 @@ export function refreshState() {
       });
       if (wasLoaded) for (const o of Object.values(orders)) detectOrderTransition(prevOrders[o.id], o);
       saveCache();
+      synced = true;
     } catch (err) {
       if (!(err instanceof NetworkError)) console.warn('Falha ao sincronizar', err);
     } finally {
@@ -265,12 +300,21 @@ function connectSocket() {
     reconnectionDelayMax: 3000,
     timeout: 6000,
   });
-  socket.on('connect', () => {
+  socket.on('connect', async () => {
     set({ connected: true });
-    refreshState();
+    await refreshState(); // sincroniza (e descarta testes antigos) antes de reenviar a fila
     outbox?.retryNow();
   });
-  socket.on('disconnect', () => set({ connected: false }));
+  socket.on('system:reset', async ({ data }) => {
+    await applyServerReset({ operationStartedAt: data.at });
+    localStorage.setItem(RESET_KEY, data.resetId);
+    toast('Dados de teste apagados. A operação começou do zero.', 'ok', 6000);
+    refreshState();
+  });
+  socket.on('disconnect', () => {
+    synced = false; // ao voltar, sincroniza antes de reenviar a fila
+    set({ connected: false });
+  });
   socket.on('connect_error', (err) => {
     set({ connected: false });
     if (err?.message === 'unauthorized') handleUnauthorized();
@@ -285,6 +329,7 @@ function connectSocket() {
 // ------------------------------------------------------------------ fila offline
 
 let outbox = null;
+let synced = false;
 const SENDER_ROLES = ['garcom', 'caixa', 'admin', 'dono'];
 
 async function initOutbox() {
@@ -292,7 +337,8 @@ async function initOutbox() {
   outbox = createOutbox({
     storage,
     send: createHttpSender({ getToken: () => state.session?.token, onUnauthorized: () => handleUnauthorized() }),
-    canSend: () => !!state.session && SENDER_ROLES.includes(state.session.role),
+    // Só envia depois da primeira sincronização (garante que pedidos de teste antigos já foram descartados).
+    canSend: () => synced && !!state.session && SENDER_ROLES.includes(state.session.role),
     onChange: (snap) => set({ outbox: snap }),
     onSent: (entry, result) => {
       if (result.order) applyOrder(result.order, 0);
@@ -306,7 +352,6 @@ async function initOutbox() {
   await outbox.init();
   set({ storageKind: storage.kind });
   await outbox.prune();
-  outbox.flush();
 }
 
 export const outboxActions = {
@@ -395,6 +440,7 @@ export async function submitDraft(table) {
     tableNumber: table,
     tabId: tab?.id ?? null,
     clientCreatedAt: new Date().toISOString(),
+    createdServerAt: Date.now() + (state.serverOffset || 0),
     createdByName: state.session?.name ?? null,
     items: lines.map((l) => ({
       menuItemId: l.menuItemId,
@@ -457,16 +503,22 @@ export function dismissReadyAlert(ticketId) {
 // ------------------------------------------------------------------ inicialização
 
 export async function startApp() {
-  window.addEventListener('online', () => {
+  // Depois de qualquer queda, primeiro sincroniza (o que também descarta testes antigos) e só então reenvia.
+  window.addEventListener('online', async () => {
+    synced = false;
     set({ online: true });
-    outbox?.retryNow();
     if (socket && !socket.connected) socket.connect();
+    await refreshState();
+    outbox?.retryNow();
   });
-  window.addEventListener('offline', () => set({ online: false }));
-  document.addEventListener('visibilitychange', () => {
+  window.addEventListener('offline', () => {
+    synced = false;
+    set({ online: false });
+  });
+  document.addEventListener('visibilitychange', async () => {
     if (document.visibilityState !== 'visible' || !state.session) return;
     if (socket && !socket.connected) socket.connect();
-    refreshState();
+    await refreshState();
     outbox?.retryNow();
   });
   // Rede de segurança: ressincroniza periodicamente mesmo sem eventos.
