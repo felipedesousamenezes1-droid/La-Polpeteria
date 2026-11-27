@@ -25,47 +25,96 @@ after(() => srv?.stop());
 const kitchenTickets = async () =>
   (await cozinha.get('/api/state')).data.orders.flatMap((o) => o.tickets.map((t) => ({ ...t, tableNumber: o.tableNumber })));
 
-describe('Menu Completo em tempos e cozinha só com comida', () => {
-  test('entrada sai na hora; prato principal e sobremesa aguardam o garçom; bebida não vai para a cozinha', T, async () => {
+describe('Menu Completo em tempos (automático) e cozinha só com comida', () => {
+  const MIN = 60_000;
+  const t = (order, course) => order.tickets.find((x) => x.course === course);
+  const advance = async (orderId, course, to) => {
+    const from = { preparando: 'novo', pronto: 'preparando', entregue: 'pronto' }[to];
+    const r = await cozinha.post(ticketPath(orderId, course), { from, to });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    return r.data.order;
+  };
+  const getOrder = async (id) => (await cozinha.get('/api/state')).data.orders.find((o) => o.id === id);
+
+  test('entrada sai na hora; o prato principal é AGENDADO sozinho quando a entrada fica pronta; bebida não vai para a cozinha', T, async () => {
     const order = (
       await garcom.post('/api/orders', newOrder(1, [[ID.combo, 2, '', [ID.rotolini, ID.risotto, ID.tiramisu]], [ID.refri, 2], [ID.chianti, 1]]))
     ).data.order;
     assert.deepEqual(
-      order.tickets.map((t) => [t.course, t.tempo, t.status]),
+      order.tickets.map((x) => [x.course, x.tempo, x.status, x.scheduledAt]),
       [
-        ['entrada', 1, 'novo'],
-        ['principal', 2, 'aguardando'],
-        ['sobremesa', 3, 'aguardando'],
+        ['entrada', 1, 'novo', null],
+        ['principal', 2, 'aguardando', null],
+        ['sobremesa', 3, 'aguardando', null],
       ],
     );
-    const names = order.tickets.flatMap((t) => t.lines.map((l) => l.name));
+    const names = order.tickets.flatMap((x) => x.lines.map((l) => l.name));
     assert.deepEqual(names, ['Rotolini di Zucchine', 'Risotto alla Pera e Gorgonzola con Polpette al Vino Rosso', 'Tiramisu']);
-    assert.ok(!names.includes('Coca-Cola lata') && !names.includes('Aperol Spritz'), 'bebidas fora da cozinha');
     assert.equal(order.tickets[0].lines[0].qty, 2, 'dois menus = 2 entradas');
-
     const bill = (await caixa.get(`/api/tabs/${order.tabId}/bill`)).data;
     assert.equal(bill.totalCents, 2 * PRICE.combo + 2 * PRICE.refri + PRICE.chianti, 'bebidas continuam na conta');
 
-    // A cozinha não libera tempos; o garçom libera com um toque (repetir não faz nada).
-    assert.equal((await cozinha.post(ticketPath(order.id, 'principal', 'fire'))).status, 403);
-    const fired = (await garcom.post(ticketPath(order.id, 'principal', 'fire'))).data.order;
-    assert.equal(fired.tickets.find((t) => t.course === 'principal').status, 'novo');
-    assert.ok(fired.tickets.find((t) => t.course === 'principal').firedAt);
+    // Ninguém precisa liberar nada: a cozinha só marca a entrada como pronta.
+    await advance(order.id, 'entrada', 'preparando');
+    const ready = await advance(order.id, 'entrada', 'pronto');
+    const principal = t(ready, 'principal');
+    assert.equal(principal.status, 'aguardando');
+    assert.ok(principal.scheduledAt, 'prato principal agendado automaticamente');
+    assert.equal(Date.parse(principal.scheduledAt) - Date.parse(t(ready, 'entrada').readyAt), 5 * MIN, 'padrão: 5 min depois da entrada pronta');
+    assert.equal(t(ready, 'sobremesa').scheduledAt, null, 'sobremesa espera o prato principal');
+
+    // Exceções opcionais: adiar e enviar agora.
+    const later = (await garcom.post(ticketPath(order.id, 'principal', 'postpone'), { minutes: 10 })).data.order;
+    assert.equal(Date.parse(t(later, 'principal').scheduledAt) - Date.parse(principal.scheduledAt), 10 * MIN, 'adiado 10 min');
+    const now = (await cozinha.post(ticketPath(order.id, 'principal', 'fire'))).data.order;
+    assert.equal(t(now, 'principal').status, 'novo', 'cozinha pode puxar antes da hora');
     assert.equal((await garcom.post(ticketPath(order.id, 'principal', 'fire'))).status, 200, 'toque repetido é inofensivo');
-    assert.equal(fired.tickets.find((t) => t.course === 'sobremesa').status, 'aguardando', 'sobremesa continua aguardando');
 
     // Cada tempo tem o seu próprio check de entregue.
-    await cozinha.post(ticketPath(order.id, 'entrada'), { from: 'novo', to: 'preparando' });
-    await cozinha.post(ticketPath(order.id, 'entrada'), { from: 'preparando', to: 'pronto' });
     const delivered = (await garcom.post(ticketPath(order.id, 'entrada'), { from: 'pronto', to: 'entregue' })).data.order;
-    assert.deepEqual(
-      delivered.tickets.map((t) => t.status),
-      ['entregue', 'novo', 'aguardando'],
-      'entrada entregue; principal em preparo; sobremesa pendente',
-    );
-    assert.equal(delivered.status, 'novo', 'pedido continua aberto enquanto houver tempo pendente');
-    const audit = (await admin.get('/api/admin/audit')).data.entries;
-    assert.ok(audit.some((e) => e.action === 'ticket.fire' && e.entityId === order.id), 'liberação registrada na auditoria');
+    assert.deepEqual(delivered.tickets.map((x) => x.status), ['entregue', 'novo', 'aguardando']);
+  });
+
+  test('com intervalo zero, o próximo tempo vai para a cozinha sozinho no instante em que o anterior fica pronto', T, async () => {
+    await admin.put('/api/admin/settings', { coursePrincipalDelay: 0, courseSobremesaDelay: 0 });
+    const order = (await garcom.post('/api/orders', newOrder(9, [[ID.combo, 1, '', [ID.rotolini, ID.trapanese, ID.cheesecake]]]))).data.order;
+    await advance(order.id, 'entrada', 'preparando');
+    let o = await advance(order.id, 'entrada', 'pronto');
+    assert.equal(t(o, 'principal').status, 'novo', 'prato principal saiu sozinho');
+    assert.ok(t(o, 'principal').firedAt);
+    await advance(order.id, 'principal', 'preparando');
+    o = await advance(order.id, 'principal', 'pronto');
+    assert.equal(t(o, 'sobremesa').status, 'novo', 'sobremesa saiu sozinha');
+    const audit = (await admin.get('/api/admin/audit')).data.entries.filter((e) => e.action === 'ticket.auto_fire' && e.entityId === order.id);
+    assert.equal(audit.length, 2, 'envios automáticos registrados na auditoria');
+    await admin.put('/api/admin/settings', { coursePrincipalDelay: 5, courseSobremesaDelay: 20 });
+  });
+
+  test('horário vencido dispara na hora; "desfazer" da cozinha cancela o agendamento; entrada cancelada libera o principal', T, async () => {
+    const order = (await garcom.post('/api/orders', newOrder(10, [[ID.combo, 1, '', [ID.rotolini, ID.ortolana, ID.tiramisu]]]))).data.order;
+    await advance(order.id, 'entrada', 'preparando');
+    let o = await advance(order.id, 'entrada', 'pronto');
+    assert.ok(t(o, 'principal').scheduledAt);
+    // Cozinha desfaz o "pronto": o agendamento é cancelado.
+    o = (await cozinha.post(ticketPath(order.id, 'entrada'), { from: 'pronto', to: 'preparando' })).data.order;
+    assert.equal(t(o, 'principal').scheduledAt, null);
+    o = await advance(order.id, 'entrada', 'pronto');
+    // Encurtar o intervalo faz o horário já ter passado: sai imediatamente.
+    await admin.put('/api/admin/settings', { coursePrincipalDelay: 0 });
+    o = await getOrder(order.id);
+    assert.equal(t(o, 'principal').status, 'novo');
+    await admin.put('/api/admin/settings', { coursePrincipalDelay: 5 });
+
+    // Entrada cancelada: o que restar do prato principal não espera.
+    const o2 = (await garcom.post('/api/orders', newOrder(11, [[ID.combo, 1, '', [ID.rotolini, ID.risotto, ID.cheesecake]], [ID.trapanese, 1]]))).data.order;
+    assert.deepEqual(t(o2, 'principal').lines.map((l) => l.name), [
+      'Risotto alla Pera e Gorgonzola con Polpette al Vino Rosso',
+      'Pasta al Pesto alla Trapanese con Polpette al Balsamico',
+    ], 'prato avulso acompanha o tempo do prato principal');
+    const r = await garcom.post(`/api/items/${o2.items[0].id}/cancel`, { cancellationId: randomUUID(), reason: 'Cliente desistiu' });
+    const c = r.data.order;
+    assert.ok(t(c, 'entrada').fullyCancelled && t(c, 'sobremesa').fullyCancelled);
+    assert.equal(t(c, 'principal').status, 'novo', 'sem entrada, o prato avulso sai na hora');
   });
 
   test('pedido só de bebidas não aparece na cozinha; pedido sem Menu Completo sai em um tempo só', T, async () => {
@@ -79,12 +128,6 @@ describe('Menu Completo em tempos e cozinha só com comida', () => {
     assert.ok(!k.some((t) => t.orderId === drinks.id));
   });
 
-  test('cancelar o Menu Completo tira os três pratos de todos os tempos', T, async () => {
-    const order = (await garcom.post('/api/orders', newOrder(3, [[ID.combo, 1, '', [ID.rotolini, ID.trapanese, ID.cheesecake]]]))).data.order;
-    const r = await garcom.post(`/api/items/${order.items[0].id}/cancel`, { cancellationId: randomUUID(), reason: 'Cliente desistiu' });
-    assert.ok(r.data.order.tickets.every((t) => t.fullyCancelled));
-    assert.equal((await garcom.post(ticketPath(order.id, 'principal', 'fire'))).status, 409);
-  });
 });
 
 describe('Taxa de serviço (10%) e taxa de rolha', () => {

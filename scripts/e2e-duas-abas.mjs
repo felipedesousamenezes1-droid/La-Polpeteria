@@ -110,16 +110,29 @@ try {
   await garcom.waitForFunction(() => document.querySelector('[data-testid=mesa-5]')?.dataset.status === 'ocupada');
   ok('garçom deu o check de "Entregue" só na entrada');
 
-  // ---------------- Garçom libera o prato principal quando o cliente terminar a entrada
+  // ---------------- Prato principal sai SOZINHO (sem o garçom precisar lembrar)
   await garcom.click('[data-testid=mesa-5]');
   await garcom.click('[data-testid=ver-conta-mesa]');
-  await garcom.waitForSelector('[data-testid=liberar-principal]');
-  assert((await garcom.locator('[data-testid=liberar-sobremesa]').count()) === 1, 'sobremesa também aguardando, com botão próprio');
+  await garcom.waitForSelector('[data-testid=agenda-principal]');
+  const agenda = await garcom.textContent('[data-testid=agenda-principal]');
+  assert(/Sai sozinho às \d{2}:\d{2} \(em [45] min\)/.test(agenda), `garçom vê o envio automático do prato principal: "${agenda}"`);
+  const agendaSob = await garcom.textContent('[data-testid=agenda-sobremesa]');
+  assert(/20 min depois que o prato principal ficar pronto/.test(agendaSob), `sobremesa: "${agendaSob}"`);
   await shot(garcom, '10-garcom-tempos');
-  await garcom.click('[data-testid=liberar-principal]');
+  const strip = await cozinha.textContent('[data-testid=proximos-tempos]');
+  assert(strip.includes('Mesa 5 · Prato principal') && strip.includes('Sai sozinho'), 'cozinha vê o prato principal em "Próximos tempos", com contagem regressiva');
+  await shot(cozinha, '12-cozinha-proximos');
+  // Para não esperar 5 minutos no teste, o Admin encurta o intervalo para 0: o horário já passou e o prato sai sozinho.
+  const adminRes = await fetch(`${server.base}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: '3333' }) });
+  const adminToken = (await adminRes.json()).token;
+  await fetch(`${server.base}/api/admin/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+    body: JSON.stringify({ coursePrincipalDelay: 0 }),
+  });
   await cozinha.waitForSelector('[data-testid=coluna-novo] article:has-text("Prato principal")');
   const principal = await cozinha.textContent('[data-testid=coluna-novo] article:has-text("Prato principal")');
-  assert(principal.includes('Risotto alla Pera') && /tempo 2 de 3/i.test(principal), 'cozinha recebeu o prato principal (tempo 2 de 3) quando o garçom liberou');
+  assert(principal.includes('Risotto alla Pera') && /tempo 2 de 3/i.test(principal), 'prato principal chegou sozinho na cozinha (tempo 2 de 3), sem nenhum toque do garçom');
   await garcom.click('[data-testid=voltar-mesas]');
 
   // ---------------- Queda de internet no aparelho do garçom

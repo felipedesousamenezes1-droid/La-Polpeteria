@@ -88,6 +88,18 @@ function ConfigPanel() {
           </span>
           <QtyStepper value={cfg.servicePct ?? 10} onChange={(v) => setCfg({ ...cfg, servicePct: v })} min={0} max={30} />
         </div>
+        <div className="flex items-center justify-between py-2">
+          <span className="font-semibold">
+            Menu Completo: prato principal sai sozinho <span className="block text-xs font-normal text-seppia">minutos depois que a entrada fica pronta</span>
+          </span>
+          <QtyStepper value={cfg.coursePrincipalDelay ?? 5} onChange={(v) => setCfg({ ...cfg, coursePrincipalDelay: v })} min={0} max={120} />
+        </div>
+        <div className="flex items-center justify-between py-2">
+          <span className="font-semibold">
+            Menu Completo: sobremesa sai sozinha <span className="block text-xs font-normal text-seppia">minutos depois que o prato principal fica pronto</span>
+          </span>
+          <QtyStepper value={cfg.courseSobremesaDelay ?? 20} onChange={(v) => setCfg({ ...cfg, courseSobremesaDelay: v })} min={0} max={120} />
+        </div>
         <label className="flex min-h-12 items-center gap-3 font-semibold">
           <input type="checkbox" className="h-6 w-6 accent-basilico-700" checked={cfg.serviceDefault ?? true} onChange={(e) => setCfg({ ...cfg, serviceDefault: e.target.checked })} />
           Incluir a taxa de serviço automaticamente nas mesas novas
@@ -142,7 +154,9 @@ const ACTION_LABELS = {
   'menu.category_delete': 'Seção excluída',
   'menu.category_move': 'Seção reordenada',
   'ticket.status': 'Andamento na cozinha',
-  'ticket.fire': 'Tempo liberado para a cozinha',
+  'ticket.fire': 'Tempo enviado antes da hora (manual)',
+  'ticket.auto_fire': 'Tempo enviado automaticamente à cozinha',
+  'ticket.postpone': 'Tempo adiado',
   'tab.service': 'Taxa de serviço alterada',
   'menu.catalog_sync': 'Cardápio atualizado com o catálogo oficial',
   'system.migration': 'Atualização do sistema',
@@ -157,7 +171,10 @@ function describe(e) {
     case 'ticket.status':
       return `Mesa ${d.mesa} · #${d.seq}${d.tempo ? ` · ${d.tempo}` : ''}: ${ORDER_STATUS_LABELS[d.de]} → ${ORDER_STATUS_LABELS[d.para]}`;
     case 'ticket.fire':
+    case 'ticket.auto_fire':
       return `Mesa ${d.mesa} · #${d.seq} · ${d.tempo}`;
+    case 'ticket.postpone':
+      return `Mesa ${d.mesa} · #${d.seq} · ${d.tempo} · +${d.minutos} min`;
     case 'tab.service':
       return `Mesa ${d.mesa} · ${d.servico}`;
     case 'item.cancel':

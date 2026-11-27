@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react';
 import { ORDER_STATUS_LABELS, CANCEL_REASONS, ROLE_LABELS } from '../../../../shared/constants.js';
 import { useAppState, actions, outboxActions, toast } from '../../lib/store.js';
 import { money, time, uuid } from '../../lib/util.js';
-import { ConfirmDialog, Icon, Modal, QtyStepper, EmptyState, ComboParts } from '../../components/ui.jsx';
+import { ConfirmDialog, Icon, Modal, QtyStepper, EmptyState, ComboParts, useNow } from '../../components/ui.jsx';
+import { scheduleText } from '../../lib/tempos.js';
 
 const STATUS_CHIP = {
   aguardando: 'bg-white text-pomodoro-700 ring-1 ring-pomodoro-200',
@@ -171,6 +172,7 @@ export default function TabOrders({ table, tab, onBack }) {
   const local = s.outbox.list.filter((e) => e.tableNumber === table && (e.status === 'pending' || e.status === 'rejected'));
 
   const [working, setWorking] = useState(null);
+  const now = useNow(15000) + s.serverOffset;
   async function ticketAction(ticket, fn, okMsg) {
     setWorking(ticket.id);
     try {
@@ -263,14 +265,29 @@ export default function TabOrders({ table, tab, onBack }) {
                       <p className="truncate text-xs text-seppia">{t.lines.filter((l) => l.qty > 0).map((l) => `${l.qty}× ${l.name}`).join(' · ')}</p>
                     </div>
                     {!t.fullyCancelled && t.status === 'aguardando' && (
-                      <button
-                        className="btn-primary !min-h-11 w-full sm:w-auto"
-                        disabled={working === t.id}
-                        onClick={() => ticketAction(t, () => actions.fireTicket(t), `Mesa ${table}: ${t.label.toLowerCase()} pedido à cozinha`)}
-                        data-testid={`liberar-${t.course}`}
-                      >
-                        Pedir à cozinha agora
-                      </button>
+                      <div className="w-full sm:w-auto">
+                        <p className="mb-1 text-sm font-semibold text-basilico-800" data-testid={`agenda-${t.course}`}>
+                          {scheduleText(t, o, s.settings, now)}
+                        </p>
+                        <div className="flex gap-2">
+                          <button
+                            className="btn-ghost !min-h-10 flex-1 text-sm"
+                            disabled={working === t.id}
+                            onClick={() => ticketAction(t, () => actions.fireTicket(t), `Mesa ${table}: ${t.label.toLowerCase()} enviado agora`)}
+                            data-testid={`liberar-${t.course}`}
+                          >
+                            Enviar agora
+                          </button>
+                          <button
+                            className="btn-ghost !min-h-10 flex-1 text-sm"
+                            disabled={working === t.id}
+                            onClick={() => ticketAction(t, () => actions.postponeTicket(t, 10), `Mesa ${table}: ${t.label.toLowerCase()} adiado 10 min`)}
+                            data-testid={`adiar-${t.course}`}
+                          >
+                            Adiar 10 min
+                          </button>
+                        </div>
+                      </div>
                     )}
                     {!t.fullyCancelled && t.status === 'pronto' && (
                       <button className="btn-gold !min-h-11 w-full sm:w-auto" disabled={working === t.id} onClick={() => ticketAction(t, () => actions.setTicketStatus(t, 'entregue'))} data-testid={`entregue-${t.course}`}>

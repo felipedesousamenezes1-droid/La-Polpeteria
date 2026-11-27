@@ -3,6 +3,7 @@ import { useAppState, actions, on, toast } from '../../lib/store.js';
 import { playNewOrder, unlockAudio, audioReady } from '../../lib/sound.js';
 import { elapsed, time } from '../../lib/util.js';
 import { Icon, useNow, ComboParts } from '../../components/ui.jsx';
+import { scheduleText } from '../../lib/tempos.js';
 
 const COLUMNS = [
   { key: 'novo', title: 'Novo', head: 'bg-pomodoro-600 text-white', action: 'Iniciar preparo', next: 'preparando' },
@@ -104,7 +105,7 @@ function TicketCard({ order, ticket, column, serverNow, settings, flash }) {
           ))}
         </ul>
         {waiting.length > 0 && column.key !== 'pronto' && (
-          <p className="mt-3 text-sm font-semibold text-seppia">Depois, aguardando o garçom: {waiting.join(', ')}</p>
+          <p className="mt-3 text-sm font-semibold text-seppia">Depois (sai sozinho): {waiting.join(', ')}</p>
         )}
         {!ticket.fullyCancelled && (
           <span className={`mt-4 flex min-h-14 items-center justify-center rounded-xl text-lg font-bold ${column.head}`}>{busy ? 'Atualizando…' : `${column.action} →`}</span>
@@ -118,6 +119,50 @@ function TicketCard({ order, ticket, column, serverNow, settings, flash }) {
         </div>
       )}
     </article>
+  );
+}
+
+/** Faixa "Próximos tempos": o que vai chegar sozinho, com contagem regressiva; a cozinha pode puxar antes. */
+function Upcoming({ orders, tabs, settings, serverNow }) {
+  const [busy, setBusy] = useState(null);
+  const list = [];
+  for (const o of Object.values(orders)) {
+    if (tabs[o.tabId]?.status === 'closed') continue;
+    const t = (o.tickets || []).find((x) => x.status === 'aguardando' && !x.fullyCancelled);
+    if (t) list.push({ o, t });
+  }
+  if (!list.length) return null;
+  list.sort((a, b) => (a.t.scheduledAt || '9').localeCompare(b.t.scheduledAt || '9'));
+  return (
+    <div className="flex gap-2 overflow-x-auto border-b border-crema-300 bg-crema-100 px-3 py-2" data-testid="proximos-tempos">
+      <span className="self-center font-serif text-lg font-bold whitespace-nowrap">Próximos tempos</span>
+      {list.map(({ o, t }) => (
+        <div key={t.id} className="flex shrink-0 items-center gap-2 rounded-xl border-2 border-crema-300 bg-white px-3 py-1.5">
+          <div>
+            <p className="font-bold whitespace-nowrap">
+              Mesa {o.tableNumber} · {t.label}
+            </p>
+            <p className="text-sm whitespace-nowrap text-seppia">{scheduleText(t, o, settings, serverNow)}</p>
+          </div>
+          <button
+            className="btn-ghost !min-h-10 text-sm"
+            disabled={busy === t.id}
+            onClick={async () => {
+              setBusy(t.id);
+              try {
+                await actions.fireTicket(t);
+              } catch (e) {
+                toast(e.message, 'error');
+              } finally {
+                setBusy(null);
+              }
+            }}
+          >
+            Puxar agora
+          </button>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -170,6 +215,7 @@ export default function KitchenScreen() {
           <Icon name="sound" /> Toque aqui para ativar o som de novos pedidos
         </button>
       )}
+      <Upcoming orders={s.orders} tabs={s.tabs} settings={s.settings} serverNow={serverNow} />
       <div className="grid min-h-0 flex-1 auto-cols-[minmax(300px,1fr)] grid-flow-col gap-3 overflow-x-auto p-3 md:grid-flow-row md:grid-cols-3 md:overflow-x-visible">
         {COLUMNS.map((col) => (
           <section key={col.key} className="flex min-h-0 flex-col rounded-2xl bg-crema-100 shadow-inner" data-testid={`coluna-${col.key}`}>

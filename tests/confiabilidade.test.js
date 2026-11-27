@@ -269,7 +269,8 @@ describe('3. Reinício do servidor com pedidos abertos', () => {
 
     // Mesmo token continua válido: aparelhos não precisam digitar PIN de novo.
     const after = stripVolatile((await device(again.base, admin.token).get('/api/state')).data);
-    assert.deepEqual(after.tabs, before.tabs, 'contas idênticas após o reinício');
+    // (a mesa 3 é do pedido que estava pendente no aparelho: pode já ter sido reenviado sozinho)
+    assert.deepEqual(after.tabs.filter((t) => t.tableNumber !== 3), before.tabs, 'contas idênticas após o reinício');
     assert.deepEqual(
       after.orders.filter((o) => o.id !== pending.id),
       before.orders,

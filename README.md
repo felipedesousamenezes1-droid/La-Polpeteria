@@ -121,15 +121,18 @@ O cardápio inicial é o da casa (arquivo `server/catalog.js`), organizado nas s
   - **tempo no Menu Completo** (Entrada, Prato principal, Sobremesa ou o próprio Menu Completo);
   - **entra no cálculo dos 10%** ou não ("Outros" vem fora).
 
-### Menu Completo em tempos
+### Menu Completo em tempos (automático)
 
-O garçom toca no Menu Completo e escolhe prato principal e sobremesa (a entrada, por ser única, já vem marcada). Ao enviar:
+O garçom toca no Menu Completo e escolhe prato principal e sobremesa (a entrada, por ser única, já vem marcada). Ao enviar, **ninguém precisa lembrar de liberar nada**:
 
 1. a **Entrada** vai para a cozinha na hora;
-2. **Prato principal** e **Sobremesa** ficam **"Aguardando"** — o garçom toca em **"Pedir à cozinha agora"** (aba Conta da mesa) quando o cliente estiver pronto;
-3. cada tempo tem o próprio andamento (Novo → Preparando → Pronto) e o próprio check de **"Entregue ✓"**.
+2. quando a cozinha marca a entrada como **Pronto**, o **Prato principal** é agendado e **sai sozinho** depois de um intervalo (padrão: **5 min**);
+3. quando o prato principal fica **Pronto**, a **Sobremesa** sai sozinha depois de outro intervalo (padrão: **20 min**);
+4. cada tempo tem o próprio andamento (Novo → Preparando → Pronto) e o próprio check de **"Entregue ✓"**.
 
-A cozinha vê "Prato principal · tempo 2 de 3" e quais tempos ainda aguardam. O caixa cobra o preço do Menu Completo (R$ 130), não a soma avulsa.
+Os intervalos são ajustados em Admin → Mesas e PINs. O garçom vê "Sai sozinho às 20:45 (em 12 min)" e tem botões **opcionais** para exceções: **Enviar agora** e **Adiar 10 min**. A cozinha vê a faixa **"Próximos tempos"** com contagem regressiva e pode **Puxar agora**. Se a entrada for cancelada, o que restar do prato principal sai na hora; se a cozinha desfizer o "Pronto", o agendamento é cancelado. O horário fica gravado no banco (vale mesmo se o servidor reiniciar), e toda saída automática fica na auditoria.
+
+Prato avulso pedido junto com um Menu Completo acompanha o tempo da sua seção (por exemplo, um prato principal avulso sai junto com o prato principal do menu). O caixa cobra o preço do Menu Completo (R$ 130), não a soma avulsa.
 
 ### Taxa de serviço
 
@@ -148,8 +151,8 @@ Entre com o PIN do Proprietário. A tela **Relatórios** tem dois painéis:
 ## Testes
 
 ```bash
-npm test       # 39 testes: pedidos, tempos da cozinha, taxa de serviço, cardápio editável, relatórios e os 5 cenários críticos
-npm run e2e    # navegador real (25 verificações): garçom, cozinha, caixa, Proprietário e Admin, com queda de rede
+npm test       # 40 testes: pedidos, tempos da cozinha, taxa de serviço, cardápio editável, relatórios e os 5 cenários críticos
+npm run e2e    # navegador real (27 verificações): garçom, cozinha, caixa, Proprietário e Admin, com queda de rede
 ```
 
 `npm test` sobe o servidor real em processos separados e cobre:

@@ -233,7 +233,13 @@ ALTER TABLE tabs ADD COLUMN closed_service_cents INTEGER;
 UPDATE tabs SET service_enabled = 0, closed_service_cents = 0 WHERE status = 'closed';
 `;
 
-export const MIGRATIONS = [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3];
+// V4: tempos seguintes saem sozinhos (agendados a partir do "pronto" do tempo anterior).
+const SCHEMA_V4 = `
+ALTER TABLE kitchen_tickets ADD COLUMN scheduled_at TEXT;
+ALTER TABLE kitchen_tickets ADD COLUMN extra_delay_min INTEGER NOT NULL DEFAULT 0;
+`;
+
+export const MIGRATIONS = [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4];
 
 /** targetVersion existe apenas para os testes simularem um banco antigo. */
 export function openDatabase(file, { targetVersion = MIGRATIONS.length } = {}) {

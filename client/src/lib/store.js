@@ -425,6 +425,12 @@ export const actions = {
     applyOrder(r.order, 0);
     return r.order;
   },
+  /** Exceção opcional: adiar um tempo que ainda aguarda. */
+  async postponeTicket(ticket, minutes = 10) {
+    const r = await api(`/api/tickets/${encodeURIComponent(ticket.id)}/postpone`, { method: 'POST', body: { minutes } });
+    applyOrder(r.order, 0);
+    return r.order;
+  },
   /** Incluir ou retirar a taxa de serviço da conta. */
   setService: (tabId, enabled) => api(`/api/tabs/${tabId}/service`, { method: 'POST', body: { enabled } }).then((r) => applyTab(r.tab, 0)),
   async cancelItem(itemId, { cancellationId, qty, reason }) {

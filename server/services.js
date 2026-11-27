@@ -82,8 +82,10 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     insertTicket: db.prepare(`INSERT INTO kitchen_tickets (id, order_id, course, tempo, status, created_at, fired_at, status_changed_at)
       VALUES (@id, @order_id, @course, @tempo, @status, @now, @fired_at, @now)`),
     setTicketStatus: db.prepare(`UPDATE kitchen_tickets SET status = @to, status_changed_at = @now,
-      ready_at = CASE WHEN @to = 'pronto' THEN COALESCE(ready_at, @now) ELSE ready_at END
+      ready_at = CASE WHEN @to = 'pronto' AND @from = 'preparando' THEN @now ELSE ready_at END
       WHERE id = @id AND status = @from`),
+    setSchedule: db.prepare('UPDATE kitchen_tickets SET scheduled_at = ? WHERE id = ?'),
+    postponeTicket: db.prepare("UPDATE kitchen_tickets SET extra_delay_min = extra_delay_min + ? WHERE id = ? AND status = 'aguardando'"),
     fireTicket: db.prepare(`UPDATE kitchen_tickets SET status = 'novo', fired_at = @now, status_changed_at = @now
       WHERE id = @id AND status = 'aguardando'`),
   };
@@ -98,6 +100,9 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       proposalTitle: q.getSetting.get('proposal_title') || 'Proposta do mês',
       serviceDefault: q.getSetting.get('service_default') !== '0',
       servicePct: Number(q.getSetting.get('service_pct') ?? 10),
+      // Minutos depois que o tempo anterior fica PRONTO na cozinha.
+      coursePrincipalDelay: Number(q.getSetting.get('course_delay_principal') ?? 5),
+      courseSobremesaDelay: Number(q.getSetting.get('course_delay_sobremesa') ?? 20),
     };
   }
 
@@ -274,6 +279,8 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
           status: t.status,
           firedAt: t.fired_at,
           readyAt: t.ready_at,
+          scheduledAt: t.scheduled_at,
+          extraDelayMin: t.extra_delay_min,
           statusChangedAt: t.status_changed_at,
           lines,
           fullyCancelled: lines.length > 0 && lines.every((l) => l.qty === 0),
@@ -548,14 +555,71 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       if (changed !== 1) throw new HttpError(409, 'STATUS_CONFLICT', 'Este prato já foi atualizado em outro aparelho.');
       audit.log(actor, 'ticket.status', 'order', order.id, { seq: order.seq, mesa: order.tableNumber, tempo: ticket.label, de: from, para: to });
     })();
+    runScheduler(); // "pronto" agenda o próximo tempo
     const order = getOrder(orderId);
     emit('order:upsert', order);
     return order;
   }
 
-  /** Garçom libera um tempo que estava aguardando (ex.: prato principal depois da entrada). */
+  /**
+   * Agendador dos tempos: o próximo tempo sai SOZINHO depois que o anterior fica pronto
+   * (prato principal: X min após a entrada; sobremesa: Y min após o principal; mais adiamentos).
+   * Se o tempo anterior foi cancelado (ou não existe), sai na hora. Conta fechada não dispara nada.
+   * Roda após mudanças na cozinha e periodicamente; o horário fica gravado (sobrevive a reinícios).
+   */
+  function runScheduler(now = new Date()) {
+    const cfg = settings();
+    const delay = { entrada: 0, unico: 0, principal: cfg.coursePrincipalDelay, sobremesa: cfg.courseSobremesaDelay };
+    const nowIsoStr = now.toISOString();
+    const orders = loadOrders("id IN (SELECT order_id FROM kitchen_tickets WHERE status = 'aguardando')");
+    const changed = new Set();
+    db.transaction(() => {
+      for (const o of orders) {
+        if (q.tabById.get(o.tabId)?.status === 'closed') continue;
+        for (const t of o.tickets) {
+          if (t.status !== 'aguardando' || t.fullyCancelled) continue;
+          const prev = o.tickets.filter((x) => x.tempo < t.tempo && !x.fullyCancelled).pop();
+          let due = null;
+          if (!prev) due = nowIsoStr;
+          else if ((prev.status === 'pronto' || prev.status === 'entregue') && prev.readyAt) {
+            due = new Date(new Date(prev.readyAt).getTime() + ((delay[t.course] ?? 0) + t.extraDelayMin) * 60_000).toISOString();
+          }
+          if (due !== t.scheduledAt) {
+            q.setSchedule.run(due, t.id);
+            changed.add(o.id);
+          }
+          if (due && due <= nowIsoStr) {
+            q.fireTicket.run({ id: t.id, now: nowIsoStr });
+            audit.log(null, 'ticket.auto_fire', 'order', o.id, { seq: o.seq, mesa: o.tableNumber, tempo: t.label, automatico: true });
+            changed.add(o.id);
+          }
+          break; // só o primeiro tempo aguardando de cada pedido; o seguinte depende deste
+        }
+      }
+    })();
+    for (const id of changed) emit('order:upsert', getOrder(id));
+    return changed;
+  }
+
+  /** Exceção opcional: adiar o próximo tempo (cliente demorando). */
+  function postponeTicket(actor, ticketId, minutes = 10) {
+    if (!isInt(minutes, 1, 120)) throw new HttpError(400, 'BAD_REQUEST', 'Adiamento inválido.');
+    let orderId;
+    db.transaction(() => {
+      const { t, order, ticket } = ticketContext(ticketId);
+      orderId = order.id;
+      if (t.status !== 'aguardando') throw new HttpError(409, 'ALREADY_FIRED', 'Este tempo já foi para a cozinha.');
+      q.postponeTicket.run(minutes, ticketId);
+      audit.log(actor, 'ticket.postpone', 'order', order.id, { seq: order.seq, mesa: order.tableNumber, tempo: ticket.label, minutos: minutes });
+    })();
+    runScheduler();
+    const order = getOrder(orderId);
+    emit('order:upsert', order);
+    return order;
+  }
+
+  /** Exceção opcional: enviar agora um tempo que ainda aguardava (garçom antecipa ou cozinha puxa). */
   function fireTicket(actor, ticketId) {
-    if (actor.role === 'cozinha') throw new HttpError(403, 'FORBIDDEN', 'Quem libera o próximo tempo é o garçom.');
     let orderId;
     let changed = 0;
     db.transaction(() => {
@@ -615,6 +679,7 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       return { orderItemId: item.id, duplicate: false };
     })();
 
+    if (!r.duplicate) runScheduler(); // tempo anterior cancelado libera o seguinte
     const item = q.itemById.get(r.orderItemId);
     const order = getOrder(item.order_id);
     if (!r.duplicate) {
@@ -948,7 +1013,12 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       proposalTitle: input.proposalTitle == null ? cur.proposalTitle : cleanText(input.proposalTitle, 40),
       serviceDefault: input.serviceDefault ?? cur.serviceDefault,
       servicePct: input.servicePct ?? cur.servicePct,
+      coursePrincipalDelay: input.coursePrincipalDelay ?? cur.coursePrincipalDelay,
+      courseSobremesaDelay: input.courseSobremesaDelay ?? cur.courseSobremesaDelay,
     };
+    if (!isInt(next.coursePrincipalDelay, 0, 120) || !isInt(next.courseSobremesaDelay, 0, 120)) {
+      throw new HttpError(400, 'BAD_DELAY', 'Intervalo entre tempos deve estar entre 0 e 120 minutos.');
+    }
     if (next.proposalTitle.length < 3) throw new HttpError(400, 'BAD_TITLE', 'Informe o nome da proposta do mês.');
     if (!isInt(next.tableCount, LIMITS.minTables, LIMITS.maxTables)) {
       throw new HttpError(400, 'BAD_TABLES', `Número de mesas deve estar entre ${LIMITS.minTables} e ${LIMITS.maxTables}.`);
@@ -970,9 +1040,12 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       q.setSetting.run('proposal_title', next.proposalTitle);
       q.setSetting.run('service_default', next.serviceDefault ? '1' : '0');
       q.setSetting.run('service_pct', String(next.servicePct));
+      q.setSetting.run('course_delay_principal', String(next.coursePrincipalDelay));
+      q.setSetting.run('course_delay_sobremesa', String(next.courseSobremesaDelay));
       audit.log(actor, 'settings.update', 'settings', null, { de: cur, para: next });
     })();
     emit('settings:changed', settings());
+    runScheduler(); // novos intervalos valem para os tempos que ainda aguardam
     return settings();
   }
 
@@ -1214,6 +1287,8 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     createOrder,
     setTicketStatus,
     fireTicket,
+    postponeTicket,
+    runScheduler,
     cancelItem,
     requestBill,
     setService,

@@ -10,6 +10,8 @@ export const DEFAULT_SETTINGS = {
   proposal_title: 'Proposta de Novembro',
   service_default: '1',
   service_pct: '10',
+  course_delay_principal: '5',
+  course_delay_sobremesa: '20',
 };
 
 /** Banco novo: configurações e PINs padrão. (O cardápio vem de runDataMigrations.) */

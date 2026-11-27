@@ -146,8 +146,11 @@ export async function createApp(config = loadConfig(), { logger = console } = {}
   api.post('/tickets/:id/status', allow('cozinha', 'garcom', 'caixa'), (req, res) => {
     res.json({ order: services.setTicketStatus(req.actor, req.params.id, req.body?.from, req.body?.to) });
   });
-  api.post('/tickets/:id/fire', allow('garcom', 'caixa'), (req, res) => {
+  api.post('/tickets/:id/fire', allow('garcom', 'caixa', 'cozinha'), (req, res) => {
     res.json({ order: services.fireTicket(req.actor, req.params.id) });
+  });
+  api.post('/tickets/:id/postpone', allow('garcom', 'caixa', 'cozinha'), (req, res) => {
+    res.json({ order: services.postponeTicket(req.actor, req.params.id, req.body?.minutes ?? 10) });
   });
   api.post('/items/:id/cancel', (req, res) => {
     res.json(services.cancelItem(req.actor, req.params.id, req.body || {}));
@@ -270,12 +273,24 @@ export async function createApp(config = loadConfig(), { logger = console } = {}
     res.status(500).json({ error: 'INTERNAL', message: 'Erro interno no servidor.' });
   });
 
+  let schedulerTimer = null;
   async function listen(port = config.port, host = config.host) {
     await new Promise((resolve, reject) => {
       server.once('error', reject);
       server.listen(port, host, resolve);
     });
     backups.start();
+    // Agendador dos tempos do Menu Completo (também roda após cada mudança na cozinha).
+    const tick = () => {
+      try {
+        services.runScheduler();
+      } catch (err) {
+        logger.error('[agendador] falha:', err);
+      }
+    };
+    tick();
+    schedulerTimer = setInterval(tick, 5000);
+    schedulerTimer.unref?.();
     return server.address().port;
   }
 
@@ -283,6 +298,7 @@ export async function createApp(config = loadConfig(), { logger = console } = {}
   async function close() {
     if (closed) return;
     closed = true;
+    clearInterval(schedulerTimer);
     await backups.stop();
     io.close();
     await new Promise((r) => server.close(() => r()));
