@@ -6,7 +6,9 @@ Sistema de pedidos em tempo real para salão e cozinha. O garçom lança o pedid
 | --- | --- | --- |
 | ![Mesas](docs/capturas/01-garcom-mesas.png) | ![Cozinha](docs/capturas/07-cozinha-quadro.png) | ![Caixa](docs/capturas/08-caixa-conta.png) |
 
-![Relatórios do Proprietário](docs/capturas/09-proprietario-painel.png)
+| Tempos do Menu Completo (garçom) | Edição do cardápio (Admin) | Relatórios (Proprietário) |
+| --- | --- | --- |
+| ![Tempos](docs/capturas/10-garcom-tempos.png) | ![Admin](docs/capturas/11-admin-cardapio.png) | ![Relatórios](docs/capturas/09-proprietario-painel.png) |
 
 ## Como rodar (um comando)
 
@@ -104,17 +106,34 @@ Os navegadores só ativam todos os recursos de PWA, entre eles o cache da interf
 
 ## Cardápio
 
-O cardápio é o da casa (arquivo `server/catalog.js`), organizado nas seções do cardápio impresso:
+O cardápio inicial é o da casa (arquivo `server/catalog.js`), organizado nas seções do cardápio impresso:
 
 - **Bebidas:** Não alcoólicas · Alcoólicas · Drinks alcoólicos.
 - **Proposta do mês** (o título, por exemplo "Proposta de Novembro", é editado em Admin → Mesas e PINs): Entrada · Prato principal · Sobremesa · Menu Completo.
 - **Carta de vinhos:** Vinhos tintos · Vinhos brancos · Vinho em taça.
+- **Outros:** Taxa de rolha (R$ 30) e o botão da taxa de serviço.
 
-**Menu Completo (R$ 130):** o garçom toca no item e escolhe o prato principal e a sobremesa. A entrada, por ser única, já vem marcada, e o item entra no pedido com a última escolha. A cozinha vê as três escolhas e o caixa cobra R$ 130. Para o próximo mês, basta marcar ou desmarcar no Admin quais pratos "fazem parte do Menu Completo".
+### Edição livre no Admin (aba Cardápio)
 
-**Excluir item:** no Admin, o ícone de lixeira remove o item do cardápio. Se ele nunca foi pedido, é apagado; se já consta em algum pedido, é arquivado (some do cardápio, mas contas e relatórios antigos continuam corretos).
+- **Itens:** criar, editar (nome, descrição, preço, seção), ativar/desativar, mudar a ordem (setas) e excluir. Se o item já foi pedido, ele é arquivado em vez de apagado, para as contas antigas continuarem corretas.
+- **Seções:** criar, renomear (os itens acompanham), mudar a ordem, mover para outra parte do cardápio e excluir (somente seções vazias). Para cada seção:
+  - **vai para a tela da cozinha** ou não (bebidas e "Outros" não vão; só entram na conta);
+  - **tempo no Menu Completo** (Entrada, Prato principal, Sobremesa ou o próprio Menu Completo);
+  - **entra no cálculo dos 10%** ou não ("Outros" vem fora).
 
-**Atualização automática:** ao mudar o `server/catalog.js` e aumentar `CATALOG_VERSION`, o servidor sincroniza o cardápio na próxima inicialização com a mesma regra (apaga o que nunca foi pedido, arquiva o que já foi).
+### Menu Completo em tempos
+
+O garçom toca no Menu Completo e escolhe prato principal e sobremesa (a entrada, por ser única, já vem marcada). Ao enviar:
+
+1. a **Entrada** vai para a cozinha na hora;
+2. **Prato principal** e **Sobremesa** ficam **"Aguardando"** — o garçom toca em **"Pedir à cozinha agora"** (aba Conta da mesa) quando o cliente estiver pronto;
+3. cada tempo tem o próprio andamento (Novo → Preparando → Pronto) e o próprio check de **"Entregue ✓"**.
+
+A cozinha vê "Prato principal · tempo 2 de 3" e quais tempos ainda aguardam. O caixa cobra o preço do Menu Completo (R$ 130), não a soma avulsa.
+
+### Taxa de serviço
+
+Calculada automaticamente (padrão 10%) sobre as seções que entram no serviço. Garçom (aba Conta da mesa ou seção "Outros") e caixa **incluem ou retiram** com um toque; cada mudança fica na auditoria. O fechamento da conta usa o total com serviço, e a divisão da conta também. Percentual e "incluir automaticamente nas mesas novas" são configurados em Admin → Mesas e PINs.
 
 ## Relatórios do Proprietário
 
@@ -129,8 +148,8 @@ Entre com o PIN do Proprietário. A tela **Relatórios** tem dois painéis:
 ## Testes
 
 ```bash
-npm test       # 33 testes: pedidos, status, permissões, imutabilidade, Menu Completo, cardápio, relatórios e os 5 cenários críticos
-npm run e2e    # navegador real: garçom (celular) + cozinha (tela grande) + caixa, com queda de rede
+npm test       # 39 testes: pedidos, tempos da cozinha, taxa de serviço, cardápio editável, relatórios e os 5 cenários críticos
+npm run e2e    # navegador real (25 verificações): garçom, cozinha, caixa, Proprietário e Admin, com queda de rede
 ```
 
 `npm test` sobe o servidor real em processos separados e cobre:
@@ -178,6 +197,5 @@ Para desenvolvimento com recarga automática, use dois terminais: `npm run dev:s
 
 ## Limitações conhecidas e próximos passos
 
-- O Menu Completo vai à cozinha de uma vez. Para segurar a sobremesa, use a observação rápida "servir a sobremesa depois". Uma evolução natural é o envio por tempos (entrada → principal → sobremesa).
-- A taxa de serviço (10%) não é somada automaticamente; o total da conta é exatamente a soma dos itens.
+- Pedidos sem Menu Completo saem para a cozinha em um tempo só (entrada e prato avulsos juntos). Para segurar um prato avulso, lance-o num pedido separado mais tarde.
 - O "dia" do histórico é o dia do calendário no fuso configurado. Um serviço que passe da meia-noite aparece em dois dias.

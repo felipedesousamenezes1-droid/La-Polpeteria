@@ -1,25 +1,67 @@
 import { useMemo, useState } from 'react';
-import { MENU_GROUPS, QUICK_NOTES, TAB_STATUS_LABELS, COMBO_CATEGORY, COMBO_STEPS } from '../../../../shared/constants.js';
-import { useAppState, addToDraft, setDraft, submitDraft, activeTabFor, toast, getState } from '../../lib/store.js';
+import { MENU_GROUPS, TAB_STATUS_LABELS, COMBO_STEPS, quickNotesFor } from '../../../../shared/constants.js';
+import { useAppState, addToDraft, setDraft, submitDraft, activeTabFor, toast, getState, actions } from '../../lib/store.js';
 import { money, normalize, vibrate } from '../../lib/util.js';
 import { Icon, Modal, QtyStepper, ComboParts } from '../../components/ui.jsx';
 import TabOrders from './TabOrders.jsx';
 
-function comboOptions(menu) {
-  return COMBO_STEPS.map((step) => menu.filter((m) => m.active && m.inCombo && step.categories.includes(m.category)));
+function comboOptions(menu, categories) {
+  return COMBO_STEPS.map((step) => {
+    const cats = categories.filter((c) => c.course === step.key).map((c) => c.name);
+    return menu.filter((m) => m.active && m.inCombo && cats.includes(m.category));
+  });
+}
+const comboParts = (opts) => COMBO_STEPS.map((st, k) => ({ step: st.label, course: st.key, menuItemId: opts[k].id, name: opts[k].name }));
+export const isComboItem = (m, categories) => categories.find((c) => c.name === m.category)?.course === 'combo';
+
+/** Taxa de serviço da mesa: calculada automaticamente; o garçom inclui ou retira com um toque. */
+function ServiceToggle({ table }) {
+  const s = useAppState();
+  const tab = activeTabFor(table);
+  const [busy, setBusy] = useState(false);
+  const pct = tab?.servicePct ?? s.settings.servicePct ?? 10;
+  if (!tab) {
+    return (
+      <div className="rounded-2xl border-2 border-dashed border-crema-300 bg-white p-3 text-sm text-seppia">
+        Serviço ({pct}%): {s.settings.serviceDefault ? 'será incluído' : 'não será incluído'} automaticamente quando a mesa fizer o primeiro pedido.
+      </div>
+    );
+  }
+  async function toggle() {
+    setBusy(true);
+    try {
+      await actions.setService(tab.id, !tab.serviceEnabled);
+      toast(tab.serviceEnabled ? `Mesa ${table}: serviço retirado` : `Mesa ${table}: serviço de ${pct}% incluído`, 'ok');
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className={`flex min-h-16 items-center gap-3 rounded-2xl border-2 px-3 py-2 ${tab.serviceEnabled ? 'border-basilico-600 bg-basilico-50' : 'border-crema-300 bg-white'}`} data-testid="servico-mesa">
+      <div className="min-w-0 flex-1">
+        <p className="font-semibold">Serviço ({pct}%)</p>
+        <p className="text-sm text-seppia">{tab.serviceEnabled ? `Incluído na conta: ${money(tab.serviceCents)}` : 'Retirado desta conta'}</p>
+      </div>
+      <button className={tab.serviceEnabled ? 'btn-ghost' : 'btn-primary'} onClick={toggle} disabled={busy || tab.status === 'closed'} data-testid="servico-toggle">
+        {tab.serviceEnabled ? 'Retirar 10%' : 'Incluir 10%'}
+      </button>
+    </div>
+  );
 }
 
 /** Menu Completo: uma escolha por etapa; com a última escolha o item entra no pedido (sem toque extra). */
 function ComboPicker({ combo, table, onClose }) {
   const s = useAppState();
-  const options = useMemo(() => comboOptions(s.menu), [s.menu]);
+  const options = useMemo(() => comboOptions(s.menu, s.categories), [s.menu, s.categories]);
   const [picked, setPicked] = useState(() => options.map((o) => (o.length === 1 ? o[0] : null)));
   function choose(i, m) {
     const next = [...picked];
     next[i] = m;
     setPicked(next);
     if (next.every(Boolean)) {
-      addToDraft(table, combo, COMBO_STEPS.map((st, k) => ({ step: st.label, menuItemId: next[k].id, name: next[k].name })));
+      addToDraft(table, combo, comboParts(next));
       vibrate(12);
       toast(`${combo.name} adicionado`, 'ok', 1500);
       onClose();
@@ -57,10 +99,10 @@ function MenuPicker({ table, lines }) {
   const s = useAppState();
   const [combo, setCombo] = useState(null);
   function tap(m) {
-    if (m.category === COMBO_CATEGORY) {
-      const opts = comboOptions(s.menu);
+    if (isComboItem(m, s.categories)) {
+      const opts = comboOptions(s.menu, s.categories);
       if (opts.every((o) => o.length === 1)) {
-        addToDraft(table, m, COMBO_STEPS.map((st, k) => ({ step: st.label, menuItemId: opts[k][0].id, name: opts[k][0].name })));
+        addToDraft(table, m, comboParts(opts.map((o) => o[0])));
         vibrate(12);
       } else setCombo(m);
       return;
@@ -82,18 +124,22 @@ function MenuPicker({ table, lines }) {
     const q = normalize(query.trim());
     if (q) return active.filter((m) => normalize(`${m.name} ${m.description}`).includes(q));
     if (sel === 'todos') return active;
-    const cats = MENU_GROUPS.find((g) => g.key === sel)?.categories || [];
+    const cats = s.categories.filter((c) => c.group === sel).map((c) => c.name);
     return active.filter((m) => cats.includes(m.category));
-  }, [s.menu, sel, query]);
+  }, [s.menu, s.categories, sel, query]);
 
-  // Seções do cardápio da casa: grupo (Bebidas, Proposta, Vinhos) → categoria → itens.
+  // Seções do cardápio da casa: grupo (Bebidas, Proposta, Vinhos, Outros) → seção → itens.
+  const showService = !query && (sel === 'todos' || sel === 'outros');
   const groups = useMemo(
     () =>
       MENU_GROUPS.map((g) => ({
         ...g,
-        cats: g.categories.map((c) => [c, items.filter((m) => m.category === c)]).filter(([, l]) => l.length),
-      })).filter((g) => g.cats.length),
-    [items],
+        cats: s.categories
+          .filter((c) => c.group === g.key)
+          .map((c) => [c.name, items.filter((m) => m.category === c.name)])
+          .filter(([, l]) => l.length),
+      })).filter((g) => g.cats.length || (g.key === 'outros' && showService)),
+    [items, s.categories, showService],
   );
 
   return (
@@ -143,7 +189,7 @@ function MenuPicker({ table, lines }) {
                     data-testid={`item-${m.id}`}
                     onClick={() => tap(m)}
                     className={`flex min-h-16 w-full items-center gap-3 rounded-2xl border-2 px-3 py-2 text-left transition-transform duration-75 active:scale-[0.98] ${
-                      qty ? 'border-basilico-600 bg-basilico-50' : m.category === COMBO_CATEGORY ? 'border-oro-400 bg-oro-100' : 'border-crema-300 bg-white'
+                      qty ? 'border-basilico-600 bg-basilico-50' : isComboItem(m, s.categories) ? 'border-oro-400 bg-oro-100' : 'border-crema-300 bg-white'
                     }`}
                   >
                     <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-base font-bold ${qty ? 'bg-basilico-700 text-white' : 'bg-crema-200 text-seppia'}`}>
@@ -160,6 +206,7 @@ function MenuPicker({ table, lines }) {
             </div>
           </section>
         ))}
+            {g.key === 'outros' && showService && <ServiceToggle table={table} />}
           </div>
         ))}
       </div>
@@ -169,7 +216,8 @@ function MenuPicker({ table, lines }) {
 }
 
 function NoteEditor({ line, onChange }) {
-  const quick = QUICK_NOTES[line.category] || [];
+  const s = useAppState();
+  const quick = quickNotesFor(line.category, s.categories);
   const parts = line.notes ? line.notes.split(', ').filter(Boolean) : [];
   const toggle = (n) => {
     const next = parts.includes(n) ? parts.filter((p) => p !== n) : [...parts, n];
@@ -275,7 +323,7 @@ export default function TableView({ table, onBack }) {
         <div className="min-w-0">
           <h1 className="font-serif text-2xl leading-none font-bold">Mesa {table}</h1>
           <p className="text-xs font-semibold text-seppia">
-            {tab ? `${TAB_STATUS_LABELS[tab.status]} · ${money(tab.totalCents)}` : localCount ? 'Pedido pendente de envio' : 'Livre'}
+            {tab ? `${TAB_STATUS_LABELS[tab.status]} · ${money(tab.grandTotalCents ?? tab.totalCents)}` : localCount ? 'Pedido pendente de envio' : 'Livre'}
           </p>
         </div>
         <div className="ml-auto flex rounded-xl border-2 border-crema-300 bg-crema-100 p-1">

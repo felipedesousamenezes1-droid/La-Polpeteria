@@ -73,6 +73,9 @@ export const CATALOG = [
   // ---------------- CARTA DE VINHOS · Em taça
   it('Vinho em taça', 'Vinho da Casa', 1500, 'Uma opção para apreciar uma boa taça de vinho.'),
   it('Vinho em taça', 'Vinho Trapiche Vineyards Malbec', 2900, 'Uma opção para apreciar uma boa taça de vinho malbec.'),
+
+  // ---------------- OUTROS
+  it('Outros', 'Taxa de rolha', 3000, 'Cobrada por garrafa de vinho trazida pelo cliente.'),
 ];
 
 const norm = (s) => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[’`]/g, "'").toLowerCase().trim();

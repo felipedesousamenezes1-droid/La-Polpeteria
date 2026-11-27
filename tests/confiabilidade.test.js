@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import { io } from 'socket.io-client';
 import { createOutbox, createHttpSender, memoryStorage } from '../client/src/lib/outbox-core.js';
 import { splitCents } from '../client/src/lib/util.js';
-import { startServer, tmpDataDir, login, device, newOrder, sleep, stripVolatile, PINS, ID, PRICE, SIMPLE_IDS } from './helpers.js';
+import { startServer, tmpDataDir, login, device, newOrder, sleep, stripVolatile, PINS, ID, PRICE, SIMPLE_IDS, ticketPath } from './helpers.js';
 
 const T = { timeout: 30_000 };
 const servers = [];
@@ -148,7 +148,7 @@ describe('1. Queda de internet durante o envio', () => {
     await dev.outbox.flush();
     // Enquanto isso o caixa fecha a conta.
     const bill = (await caixa.get(`/api/tabs/${first.tabId}/bill`)).data;
-    assert.equal((await caixa.post(`/api/tabs/${first.tabId}/close`, { expectedTotalCents: bill.totalCents })).status, 200);
+    assert.equal((await caixa.post(`/api/tabs/${first.tabId}/close`, { expectedTotalCents: bill.grandTotalCents })).status, 200);
     dev.net.mode = 'ok';
     await dev.outbox.retryNow();
     const rejected = dev.outbox.get(entry.id);
@@ -231,9 +231,10 @@ describe('3. Reinício do servidor com pedidos abertos', () => {
     const o1 = (await garcom.post('/api/orders', newOrder(1, [[ID.risotto, 2, 'sem pimenta'], [ID.refri, 2]]))).data.order;
     const o2 = (await garcom.post('/api/orders', newOrder(2, [[ID.trapanese, 1], [ID.combo, 1, '', [ID.rotolini, ID.ortolana, ID.cheesecake]]]))).data.order;
     const o3 = (await garcom.post('/api/orders', newOrder(1, [[ID.tiramisu, 2]]))).data.order;
-    await cozinha.post(`/api/orders/${o1.id}/status`, { from: 'novo', to: 'preparando' });
-    await cozinha.post(`/api/orders/${o2.id}/status`, { from: 'novo', to: 'preparando' });
-    await cozinha.post(`/api/orders/${o2.id}/status`, { from: 'preparando', to: 'pronto' });
+    await cozinha.post(ticketPath(o1.id), { from: 'novo', to: 'preparando' });
+    await cozinha.post(ticketPath(o2.id, 'entrada'), { from: 'novo', to: 'preparando' });
+    await cozinha.post(ticketPath(o2.id, 'entrada'), { from: 'preparando', to: 'pronto' });
+    await garcom.post(ticketPath(o2.id, 'principal', 'fire'));
     await garcom.post(`/api/items/${o3.items[0].id}/cancel`, { cancellationId: crypto.randomUUID(), qty: 1, reason: 'Lançado por engano' });
     await garcom.post(`/api/tabs/${o2.tabId}/request-bill`);
     const before = stripVolatile((await admin.get('/api/state')).data);
@@ -445,16 +446,24 @@ describe('5. Conferência: total do caixa = itens enviados − cancelados', () =
       const cancelled = bill.cancelled.filter((c) => c.itemId === l.itemId).reduce((s, c) => s + c.qty, 0);
       assert.equal(active + cancelled, l.qty, 'cada unidade enviada está na conta ou nos cancelados');
     }
-    const parts = splitCents(bill.totalCents, 3);
-    assert.equal(parts.reduce((a, b) => a + b, 0), bill.totalCents, 'divisão da conta soma exatamente o total');
+    // Taxa de serviço: 10% sobre as seções que entram no serviço (taxas da seção "Outros" ficam fora).
+    const base = bill.lines.filter((l) => l.inService).reduce((s, l) => s + l.subtotalCents, 0);
+    assert.ok(bill.lines.filter((l) => l.category === 'Outros').every((l) => !l.inService), 'Outros fora dos 10%');
+    assert.equal(bill.serviceCents, Math.round(base * 0.1), 'serviço = 10% calculado automaticamente');
+    const grand = bill.grandTotalCents;
+    assert.equal(grand, expected + bill.serviceCents, 'total a pagar = consumo + serviço');
+
+    const parts = splitCents(grand, 3);
+    assert.equal(parts.reduce((a, b) => a + b, 0), grand, 'divisão da conta soma exatamente o total');
 
     // Fechamento exige o total conferido; conta fechada trava a mesa.
-    const wrong = await caixa.post(`/api/tabs/${tabId}/close`, { expectedTotalCents: expected + 1 });
+    const wrong = await caixa.post(`/api/tabs/${tabId}/close`, { expectedTotalCents: grand + 1 });
     assert.equal(wrong.data.error, 'TOTAL_CHANGED');
-    assert.equal((await garcom.post(`/api/tabs/${tabId}/close`, { expectedTotalCents: expected })).status, 403, 'garçom não fecha conta');
-    const closed = await caixa.post(`/api/tabs/${tabId}/close`, { expectedTotalCents: expected });
+    assert.equal((await garcom.post(`/api/tabs/${tabId}/close`, { expectedTotalCents: grand })).status, 403, 'garçom não fecha conta');
+    const closed = await caixa.post(`/api/tabs/${tabId}/close`, { expectedTotalCents: grand });
     assert.equal(closed.status, 200);
-    assert.equal(closed.data.tab.closedTotalCents, expected);
+    assert.equal(closed.data.tab.closedTotalCents, grand);
+    assert.equal(closed.data.tab.closedServiceCents, bill.serviceCents);
     assert.equal((await garcom.post('/api/orders', newOrder(12, [[ID.agua, 1]], { tabId }))).data.error, 'TAB_CLOSED');
     assert.equal((await garcom.post(`/api/items/${multi.itemId}/cancel`, { cancellationId: crypto.randomUUID(), qty: 1, reason: 'depois de fechar' })).data.error, 'TAB_CLOSED');
 

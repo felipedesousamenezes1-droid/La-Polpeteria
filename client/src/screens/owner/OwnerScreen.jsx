@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ROLE_LABELS, ORDER_STATUS_LABELS, TAB_STATUS_LABELS, MENU_GROUPS } from '../../../../shared/constants.js';
+import { ROLE_LABELS, ORDER_STATUS_LABELS, TAB_STATUS_LABELS } from '../../../../shared/constants.js';
 import { useAppState, api, toast, getState } from '../../lib/store.js';
 import { money, time, todayLocal } from '../../lib/util.js';
 import { EmptyState, Icon } from '../../components/ui.jsx';
@@ -17,7 +17,6 @@ const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + 
 const dayLabel = (s) => parse(s).toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit' }).replace('.', '');
 const shortDate = (s) => parse(s).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
 const minutes = (m) => (m == null ? '—' : m >= 60 ? `${Math.floor(m / 60)}h${pad(Math.round(m % 60))}` : `${Math.round(m)} min`);
-const FOOD = MENU_GROUPS.find((g) => g.key === 'proposta').categories;
 
 /** Sábado e domingo mais recentes (se hoje for sábado ou domingo, o fim de semana atual). */
 function lastWeekend() {
@@ -113,7 +112,7 @@ function SalesPanel() {
         detail: `${p.name}: ${p.qty} un. · ${money(p.revenueCents)} · em ${p.ordersCount} pedido(s)`,
       }));
     const dishes = data.products
-      .filter((p) => FOOD.includes(p.category) && p.category !== 'Menu Completo' && p.servedQty > 0)
+      .filter((p) => p.isDish && p.servedQty > 0)
       .sort((a, b) => b.servedQty - a.servedQty)
       .map((p) => ({
         key: p.menuItemId,
@@ -171,7 +170,7 @@ function SalesPanel() {
         <>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4" data-testid="kpis">
             <Stat label="Vendas" value={money(view.k.salesCents)} sub={`${view.k.itemsSold} itens vendidos`} tone="border-basilico-200" />
-            <Stat label="Recebido (contas fechadas)" value={money(view.k.closedRevenueCents)} sub={`${view.k.closedTabs} conta(s)`} />
+            <Stat label="Recebido (contas fechadas)" value={money(view.k.closedRevenueCents)} sub={`${view.k.closedTabs} conta(s), com serviço`} />
             <Stat label="Ticket médio por mesa" value={view.k.avgTicketCents == null ? '—' : money(view.k.avgTicketCents)} sub={view.k.avgTabMinutes == null ? '' : `permanência média ${minutes(view.k.avgTabMinutes)}`} />
             <Stat label="Mesas atendidas" value={view.k.tablesServed} sub={`${view.k.ordersCount} pedido(s) à cozinha`} />
             <Stat label="Tempo médio de preparo" value={minutes(view.k.avgPrepMinutes)} sub={view.k.prepCount ? `do envio ao "pronto" (${view.k.prepCount} pedidos)` : 'sem pedidos marcados como pronto'} />
@@ -181,7 +180,7 @@ function SalesPanel() {
               sub={`${money(view.k.cancelledCents)} · ${view.k.cancelRatePct.toFixed(1).replace('.', ',')}% dos itens`}
               tone={view.k.cancelledQty ? 'border-pomodoro-200' : ''}
             />
-            <Stat label="Dias com movimento" value={view.k.daysWithSales} />
+            <Stat label="Serviço recebido" value={money(view.k.serviceCents || 0)} sub="taxa de serviço das contas fechadas" />
             <Stat label="Média por dia" value={view.k.daysWithSales ? money(Math.round(view.k.salesCents / view.k.daysWithSales)) : '—'} />
           </div>
 

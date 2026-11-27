@@ -50,6 +50,7 @@ let state = {
   today: null,
   settings: { tableCount: 20, warnMinutes: 10, lateMinutes: 20 },
   menu: [],
+  categories: [],
   tabs: {},
   orders: {},
   serverOffset: 0,
@@ -155,11 +156,15 @@ function applyEntity(collection, entity, rev) {
   return next;
 }
 
+/** Avisos por tempo da cozinha: chegou na cozinha (som) / ficou pronto (alerta ao garçom). */
 function detectOrderTransition(prev, next) {
   if (!state.loaded) return;
-  if (!prev && next.status === 'novo' && !next.fullyCancelled) fire('order:new', next);
-  if (prev && prev.status !== 'pronto' && next.status === 'pronto') fire('order:ready', next);
-  if (prev && !prev.fullyCancelled && next.fullyCancelled) fire('order:cancelled', next);
+  for (const t of next.tickets || []) {
+    const pt = prev?.tickets?.find((x) => x.id === t.id);
+    const arrived = t.status === 'novo' && !t.fullyCancelled && (!pt || pt.status === 'aguardando');
+    if (arrived) fire('ticket:new', { order: next, ticket: t });
+    if (pt && pt.status !== 'pronto' && t.status === 'pronto') fire('ticket:ready', { order: next, ticket: t });
+  }
 }
 
 export function applyOrder(order, rev = 0) {
@@ -193,6 +198,7 @@ function saveCache() {
     today: state.today,
     settings: state.settings,
     menu: state.menu,
+    categories: state.categories,
     tabs: activeTabs,
     orders: Object.values(state.orders).filter((o) => ids.has(o.tabId)),
     savedAt: Date.now(),
@@ -203,7 +209,7 @@ function hydrateFromCache() {
   const c = readJson(CACHE_KEY, null);
   if (!c || !state.session) return;
   const byId = (list) => Object.fromEntries(list.map((e) => [e.id, { ...e, _rev: 0 }]));
-  set({ loaded: true, rev: 0, today: c.today, settings: c.settings, menu: c.menu, tabs: byId(c.tabs), orders: byId(c.orders) });
+  set({ loaded: true, rev: 0, today: c.today, settings: c.settings, menu: c.menu, categories: c.categories || [], tabs: byId(c.tabs), orders: byId(c.orders) });
 }
 
 let refreshing = null;
@@ -225,6 +231,7 @@ export function refreshState() {
         today: s.today,
         settings: s.settings,
         menu: s.menu,
+        categories: s.categories,
         orders,
         tabs,
         serverOffset: new Date(s.serverTime).getTime() - (t0 + t1) / 2,
@@ -270,7 +277,7 @@ function connectSocket() {
   });
   socket.on('order:upsert', ({ rev, data }) => applyOrder(data, rev));
   socket.on('tab:upsert', ({ rev, data }) => applyTab(data, rev));
-  socket.on('menu:changed', ({ data }) => set({ menu: data }));
+  socket.on('menu:changed', ({ data }) => set({ menu: data.menu, categories: data.categories }));
   socket.on('settings:changed', ({ data }) => set({ settings: data }));
   socket.on('session:revoked', () => handleUnauthorized());
 }
@@ -406,11 +413,20 @@ export async function submitDraft(table) {
 // ------------------------------------------------------------------ ações online
 
 export const actions = {
-  async setOrderStatus(order, to) {
-    const r = await api(`/api/orders/${order.id}/status`, { method: 'POST', body: { from: order.status, to } });
+  /** Andamento de um tempo da cozinha (Novo → Preparando → Pronto → Entregue). */
+  async setTicketStatus(ticket, to) {
+    const r = await api(`/api/tickets/${encodeURIComponent(ticket.id)}/status`, { method: 'POST', body: { from: ticket.status, to } });
     applyOrder(r.order, 0);
     return r.order;
   },
+  /** Garçom libera um tempo que estava aguardando (prato principal, sobremesa). */
+  async fireTicket(ticket) {
+    const r = await api(`/api/tickets/${encodeURIComponent(ticket.id)}/fire`, { method: 'POST' });
+    applyOrder(r.order, 0);
+    return r.order;
+  },
+  /** Incluir ou retirar a taxa de serviço da conta. */
+  setService: (tabId, enabled) => api(`/api/tabs/${tabId}/service`, { method: 'POST', body: { enabled } }).then((r) => applyTab(r.tab, 0)),
   async cancelItem(itemId, { cancellationId, qty, reason }) {
     const r = await api(`/api/items/${itemId}/cancel`, { method: 'POST', body: { cancellationId, qty, reason } });
     applyOrder(r.order, 0);
@@ -424,11 +440,12 @@ export const actions = {
 
 // ------------------------------------------------------------------ alertas de pedido pronto
 
-export function addReadyAlert(orderId) {
-  set((s) => ({ readyAlerts: s.readyAlerts.includes(orderId) ? s.readyAlerts : [...s.readyAlerts, orderId] }));
+// Alertas guardam o id do tempo da cozinha ("pedido:tempo").
+export function addReadyAlert(ticketId) {
+  set((s) => ({ readyAlerts: s.readyAlerts.includes(ticketId) ? s.readyAlerts : [...s.readyAlerts, ticketId] }));
 }
-export function dismissReadyAlert(orderId) {
-  set((s) => ({ readyAlerts: s.readyAlerts.filter((id) => id !== orderId) }));
+export function dismissReadyAlert(ticketId) {
+  set((s) => ({ readyAlerts: s.readyAlerts.filter((id) => id !== ticketId) }));
 }
 
 // ------------------------------------------------------------------ inicialização

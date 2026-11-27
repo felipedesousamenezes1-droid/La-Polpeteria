@@ -179,7 +179,61 @@ BEGIN SELECT RAISE(ABORT, 'PROTEGIDO: item que já consta em pedidos não pode s
 CREATE INDEX audit_log_entity ON audit_log (entity_id);
 `;
 
-export const MIGRATIONS = [SCHEMA_V1, SCHEMA_V2];
+// V3: seções editáveis, tempos da cozinha (Menu Completo em etapas; bebidas fora da cozinha)
+//     e taxa de serviço por conta.
+const SCHEMA_V3 = `
+CREATE TABLE menu_categories (
+  name       TEXT PRIMARY KEY,
+  group_key  TEXT NOT NULL,
+  sort       INTEGER NOT NULL DEFAULT 0,
+  kitchen    INTEGER NOT NULL DEFAULT 0 CHECK (kitchen IN (0, 1)),
+  course     TEXT CHECK (course IS NULL OR course IN ('entrada', 'principal', 'sobremesa', 'combo')),
+  in_service INTEGER NOT NULL DEFAULT 1 CHECK (in_service IN (0, 1))
+);
+
+-- Congelados no momento do pedido: para qual tempo da cozinha o item vai e se entra nos 10%.
+ALTER TABLE order_items ADD COLUMN kitchen_course TEXT;
+ALTER TABLE order_items ADD COLUMN in_service INTEGER NOT NULL DEFAULT 1;
+
+-- Pedidos antigos: comida em um tempo único; bebidas fora da cozinha.
+DROP TRIGGER order_items_no_update;
+UPDATE order_items SET kitchen_course = 'unico'
+ WHERE category IN ('Entrada', 'Prato principal', 'Sobremesa', 'Menu Completo', 'Antipasti', 'Massas', 'Pizzas', 'Carnes', 'Sobremesas');
+CREATE TRIGGER order_items_no_update BEFORE UPDATE ON order_items
+BEGIN SELECT RAISE(ABORT, 'PROTEGIDO: itens enviados são imutáveis (use cancelamento)'); END;
+
+CREATE TABLE kitchen_tickets (
+  id                TEXT PRIMARY KEY,
+  order_id          TEXT NOT NULL REFERENCES orders (id),
+  course            TEXT NOT NULL CHECK (course IN ('unico', 'entrada', 'principal', 'sobremesa')),
+  tempo             INTEGER NOT NULL,
+  status            TEXT NOT NULL CHECK (status IN ('aguardando', 'novo', 'preparando', 'pronto', 'entregue')),
+  created_at        TEXT NOT NULL,
+  fired_at          TEXT,
+  ready_at          TEXT,
+  status_changed_at TEXT NOT NULL,
+  UNIQUE (order_id, course)
+);
+CREATE INDEX kitchen_tickets_status ON kitchen_tickets (status);
+CREATE TRIGGER kitchen_tickets_no_delete BEFORE DELETE ON kitchen_tickets
+BEGIN SELECT RAISE(ABORT, 'PROTEGIDO: tempos da cozinha não podem ser apagados'); END;
+CREATE TRIGGER kitchen_tickets_frozen BEFORE UPDATE OF id, order_id, course, tempo, created_at ON kitchen_tickets
+BEGIN SELECT RAISE(ABORT, 'PROTEGIDO: dados de origem do tempo não podem ser alterados'); END;
+
+INSERT INTO kitchen_tickets (id, order_id, course, tempo, status, created_at, fired_at, ready_at, status_changed_at)
+SELECT o.id || ':unico', o.id, 'unico', 1, o.status, o.received_at, o.received_at,
+       CASE WHEN o.status IN ('pronto', 'entregue') THEN o.status_changed_at END, o.status_changed_at
+  FROM orders o
+ WHERE EXISTS (SELECT 1 FROM order_items i WHERE i.order_id = o.id AND i.kitchen_course IS NOT NULL);
+
+ALTER TABLE tabs ADD COLUMN service_enabled INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE tabs ADD COLUMN service_pct INTEGER NOT NULL DEFAULT 10;
+ALTER TABLE tabs ADD COLUMN closed_service_cents INTEGER;
+-- Contas já fechadas foram fechadas sem serviço: assim permanecem.
+UPDATE tabs SET service_enabled = 0, closed_service_cents = 0 WHERE status = 'closed';
+`;
+
+export const MIGRATIONS = [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3];
 
 /** targetVersion existe apenas para os testes simularem um banco antigo. */
 export function openDatabase(file, { targetVersion = MIGRATIONS.length } = {}) {

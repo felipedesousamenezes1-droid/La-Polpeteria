@@ -8,7 +8,7 @@ import { openDatabase } from '../server/db.js';
 import { createAudit } from '../server/audit.js';
 import { hashPin } from '../server/auth.js';
 import { CATALOG } from '../server/catalog.js';
-import { startServer, tmpDataDir, login, newOrder, ID, PRICE, PINS } from './helpers.js';
+import { startServer, tmpDataDir, login, newOrder, ID, PRICE, PINS, ticketPath } from './helpers.js';
 
 const T = { timeout: 30_000 };
 const servers = [];
@@ -91,6 +91,11 @@ describe('Cardápio oficial e atualização do banco que já está no ar', () =>
     const old = state.orders.find((o) => o.id === orderId);
     assert.ok(old, 'pedido antigo continua no sistema');
     assert.equal(old.totalCents, 2 * 1000 + 3600, 'valores antigos preservados');
+    assert.equal(old.tickets.length, 1, 'pedido antigo vira um tempo único na cozinha');
+    assert.equal(old.tickets[0].status, 'entregue', 'com o mesmo andamento');
+    assert.deepEqual(old.tickets[0].lines.map((l) => l.name), ['Rotolini di Zucchine'], 'bebida antiga fora da cozinha');
+    assert.ok(state.categories.some((c) => c.name === 'Outros'), 'seções criadas');
+    assert.ok(!state.categories.some((c) => ['Pizzas', 'Antipasti', 'Bebidas'].includes(c.name)), 'sem seções antigas vazias');
     assert.equal((await dono.get('/api/admin/audit/verify')).data.ok, true);
 
     // Reiniciar não repete a sincronização (idempotente).
@@ -147,16 +152,18 @@ describe('Perfil Proprietário e relatórios', () => {
     const o1 = (await garcom.post('/api/orders', newOrder(4, [[ID.refri, 2], [ID.combo, 2, '', [ID.rotolini, ID.risotto, ID.tiramisu]]]))).data.order;
     const o2 = (await garcom.post('/api/orders', newOrder(4, [[ID.risotto, 1]]))).data.order;
     await garcom.post(`/api/items/${o1.items[0].id}/cancel`, { cancellationId: randomUUID(), qty: 1, reason: 'Cliente desistiu' });
-    await cozinha.post(`/api/orders/${o2.id}/status`, { from: 'novo', to: 'preparando' });
-    await cozinha.post(`/api/orders/${o2.id}/status`, { from: 'preparando', to: 'pronto' });
+    await cozinha.post(ticketPath(o2.id), { from: 'novo', to: 'preparando' });
+    await cozinha.post(ticketPath(o2.id), { from: 'preparando', to: 'pronto' });
     const bill = (await caixa.get(`/api/tabs/${o1.tabId}/bill`)).data;
-    await caixa.post(`/api/tabs/${o1.tabId}/close`, { expectedTotalCents: bill.totalCents });
+    await caixa.post(`/api/tabs/${o1.tabId}/close`, { expectedTotalCents: bill.grandTotalCents });
 
     const r = (await dono.get('/api/owner/report')).data;
     const expected = PRICE.refri * 1 + 2 * PRICE.combo + PRICE.risotto;
     assert.equal(r.kpis.salesCents, expected, 'vendas = itens válidos');
-    assert.equal(r.kpis.closedRevenueCents, expected, 'recebido = conta fechada');
-    assert.equal(r.kpis.avgTicketCents, expected);
+    const service = Math.round(expected * 0.1);
+    assert.equal(r.kpis.serviceCents, service, 'serviço de 10% registrado');
+    assert.equal(r.kpis.closedRevenueCents, expected + service, 'recebido = conta fechada (com serviço)');
+    assert.equal(r.kpis.avgTicketCents, expected + service);
     assert.equal(r.kpis.itemsSold, 1 + 2 + 1);
     assert.equal(r.kpis.ordersCount, 2);
     assert.equal(r.kpis.tablesServed, 1);

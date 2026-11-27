@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CATEGORIES, ROLE_LABELS, ORDER_STATUS_LABELS, TAB_STATUS_LABELS, COMBO_CATEGORY, COMBO_STEPS } from '../../../../shared/constants.js';
+import { ROLE_LABELS, ORDER_STATUS_LABELS } from '../../../../shared/constants.js';
+import MenuEditor from './MenuEditor.jsx';
 import { useAppState, api, toast, getState } from '../../lib/store.js';
 import { money, time, dateTime, todayLocal } from '../../lib/util.js';
 import { EmptyState, Icon, Modal, QtyStepper, ConfirmDialog } from '../../components/ui.jsx';
@@ -10,182 +11,6 @@ const TABS = [
   ['audit', 'Auditoria'],
   ['backup', 'Backups'],
 ];
-
-function parsePrice(text) {
-  const t = String(text).trim().replace(/[R$\s]/g, '');
-  if (!/^\d+([.,]\d{1,2})?$/.test(t)) return null;
-  return Math.round(Number(t.replace(',', '.')) * 100);
-}
-
-// ------------------------------------------------------------------ Cardápio
-
-function MenuItemForm({ item, onClose }) {
-  const [form, setForm] = useState({
-    name: item?.name || '',
-    description: item?.description || '',
-    category: item?.category || CATEGORIES[0],
-    price: item ? (item.priceCents / 100).toFixed(2).replace('.', ',') : '',
-    active: item ? item.active : true,
-    inCombo: item ? item.inCombo : false,
-  });
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const set = (k) => (e) => setForm({ ...form, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value });
-
-  async function save() {
-    const priceCents = parsePrice(form.price);
-    if (priceCents == null) return setError('Preço inválido. Use, por exemplo, 62,00.');
-    setBusy(true);
-    setError('');
-    try {
-      const body = { name: form.name, description: form.description, category: form.category, priceCents, active: form.active, inCombo: form.inCombo };
-      if (item) await api(`/api/admin/menu/${item.id}`, { method: 'PUT', body });
-      else await api('/api/admin/menu', { method: 'POST', body });
-      toast('Cardápio atualizado', 'ok');
-      onClose();
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Modal
-      open
-      onClose={onClose}
-      title={item ? 'Editar item' : 'Novo item'}
-      footer={
-        <>
-          <button className="btn-ghost" onClick={onClose}>
-            Cancelar
-          </button>
-          <button className="btn-primary" onClick={save} disabled={busy}>
-            Salvar
-          </button>
-        </>
-      }
-    >
-      <div className="grid gap-3">
-        <div>
-          <label className="label">Nome</label>
-          <input className="input" value={form.name} onChange={set('name')} maxLength={80} />
-        </div>
-        <div>
-          <label className="label">Descrição</label>
-          <input className="input" value={form.description} onChange={set('description')} maxLength={200} />
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="label">Categoria</label>
-            <select className="input" value={form.category} onChange={set('category')}>
-              {CATEGORIES.map((c) => (
-                <option key={c}>{c}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="label">Preço (R$)</label>
-            <input className="input" inputMode="decimal" value={form.price} onChange={set('price')} placeholder="0,00" />
-          </div>
-        </div>
-        <label className="flex min-h-12 items-center gap-3 font-semibold">
-          <input type="checkbox" className="h-6 w-6 accent-basilico-700" checked={form.active} onChange={set('active')} /> Disponível no cardápio
-        </label>
-        {form.category === COMBO_CATEGORY ? (
-          <p className="rounded-xl bg-oro-100 p-3 text-sm">
-            Item composto: o garçom escolhe {COMBO_STEPS.map((s) => s.label.toLowerCase()).join(', ')} entre os pratos marcados como "faz parte do Menu Completo". O preço cobrado é o deste item.
-          </p>
-        ) : (
-          COMBO_STEPS.some((s) => s.categories.includes(form.category)) && (
-            <label className="flex min-h-12 items-center gap-3 font-semibold">
-              <input type="checkbox" className="h-6 w-6 accent-basilico-700" checked={form.inCombo} onChange={set('inCombo')} /> Faz parte do Menu Completo
-            </label>
-          )
-        )}
-        {item && <p className="text-sm text-seppia">Mudanças de preço valem só para pedidos novos; contas já lançadas mantêm o preço do momento do pedido.</p>}
-        {error && <p className="font-semibold text-pomodoro-700">{error}</p>}
-      </div>
-    </Modal>
-  );
-}
-
-function MenuPanel() {
-  const s = useAppState();
-  const [editing, setEditing] = useState(null);
-  const [removing, setRemoving] = useState(null);
-  async function remove() {
-    try {
-      const r = await api(`/api/admin/menu/${removing.id}`, { method: 'DELETE' });
-      toast(r.result === 'deleted' ? `"${removing.name}" excluído do cardápio` : `"${removing.name}" removido do cardápio (mantido só no histórico de contas antigas)`, 'ok', 5000);
-    } catch (e) {
-      toast(e.message, 'error');
-    } finally {
-      setRemoving(null);
-    }
-  }
-  async function toggle(item) {
-    try {
-      await api(`/api/admin/menu/${item.id}`, { method: 'PUT', body: { active: !item.active } });
-    } catch (e) {
-      toast(e.message, 'error');
-    }
-  }
-  return (
-    <div>
-      <div className="mb-3 flex items-center justify-between">
-        <p className="text-sm text-seppia">{s.menu.filter((m) => m.active).length} de {s.menu.length} itens disponíveis</p>
-        <button className="btn-primary" onClick={() => setEditing('new')}>
-          <Icon name="plus" /> Novo item
-        </button>
-      </div>
-      {CATEGORIES.filter((c) => s.menu.some((m) => m.category === c)).map((c) => (
-        <section key={c} className="mb-4">
-          <h3 className="mb-2 font-serif text-xl font-bold text-basilico-800">{c}</h3>
-          <ul className="card divide-y divide-crema-200">
-            {s.menu
-              .filter((m) => m.category === c)
-              .map((m) => (
-                <li key={m.id} className={`flex items-center gap-3 px-3 py-2 ${m.active ? '' : 'opacity-60'}`}>
-                  <div className="min-w-0 flex-1">
-                    <p className="font-semibold">
-                      {m.name}
-                      {m.inCombo && <span className="ml-2 rounded-full bg-oro-200 px-2 py-0.5 text-xs font-bold text-oro-700">Menu Completo</span>}
-                    </p>
-                    <p className="truncate text-sm text-seppia">{m.description}</p>
-                  </div>
-                  <span className="font-bold tabular-nums">{money(m.priceCents)}</span>
-                  <button
-                    className={`min-h-11 min-w-28 rounded-full px-3 text-sm font-bold ${m.active ? 'bg-basilico-700 text-white' : 'bg-crema-300 text-inchiostro'}`}
-                    onClick={() => toggle(m)}
-                    aria-pressed={m.active}
-                  >
-                    {m.active ? 'Ativo' : 'Desativado'}
-                  </button>
-                  <button className="btn-ghost !min-h-11 !px-3" onClick={() => setEditing(m)} aria-label={`Editar ${m.name}`}>
-                    <Icon name="note" className="h-5 w-5" />
-                  </button>
-                  <button className="btn-ghost !min-h-11 !px-3 text-pomodoro-700" onClick={() => setRemoving(m)} aria-label={`Excluir ${m.name}`}>
-                    <Icon name="trash" className="h-5 w-5" />
-                  </button>
-                </li>
-              ))}
-          </ul>
-        </section>
-      ))}
-      {editing && <MenuItemForm item={editing === 'new' ? null : editing} onClose={() => setEditing(null)} />}
-      <ConfirmDialog
-        open={!!removing}
-        danger
-        title={`Excluir "${removing?.name}"?`}
-        message="O item sai do cardápio. Se ele já foi pedido alguma vez, as contas e relatórios antigos continuam mostrando-o corretamente."
-        confirmLabel="Excluir"
-        onCancel={() => setRemoving(null)}
-        onConfirm={remove}
-      />
-    </div>
-  );
-}
 
 // ------------------------------------------------------------------ Configurações
 
@@ -257,6 +82,16 @@ function ConfigPanel() {
           </span>
           <QtyStepper value={cfg.lateMinutes} onChange={(v) => setCfg({ ...cfg, lateMinutes: v })} min={2} max={480} />
         </div>
+        <div className="flex items-center justify-between py-2">
+          <span className="font-semibold">
+            Taxa de serviço (%) <span className="block text-xs font-normal text-seppia">calculada automaticamente na conta</span>
+          </span>
+          <QtyStepper value={cfg.servicePct ?? 10} onChange={(v) => setCfg({ ...cfg, servicePct: v })} min={0} max={30} />
+        </div>
+        <label className="flex min-h-12 items-center gap-3 font-semibold">
+          <input type="checkbox" className="h-6 w-6 accent-basilico-700" checked={cfg.serviceDefault ?? true} onChange={(e) => setCfg({ ...cfg, serviceDefault: e.target.checked })} />
+          Incluir a taxa de serviço automaticamente nas mesas novas
+        </label>
         <div className="py-2">
           <label className="label" htmlFor="proposta">
             Nome da proposta do mês (título da seção no cardápio)
@@ -301,6 +136,14 @@ const ACTION_LABELS = {
   'backup.manual': 'Backup manual',
   'export.download': 'Relatório exportado',
   'menu.delete': 'Item excluído do cardápio',
+  'menu.move': 'Item reordenado no cardápio',
+  'menu.category_create': 'Seção criada',
+  'menu.category_update': 'Seção alterada',
+  'menu.category_delete': 'Seção excluída',
+  'menu.category_move': 'Seção reordenada',
+  'ticket.status': 'Andamento na cozinha',
+  'ticket.fire': 'Tempo liberado para a cozinha',
+  'tab.service': 'Taxa de serviço alterada',
   'menu.catalog_sync': 'Cardápio atualizado com o catálogo oficial',
   'system.migration': 'Atualização do sistema',
 };
@@ -311,11 +154,16 @@ function describe(e) {
     case 'order.create':
       return `Mesa ${d.mesa} · #${d.seq} · ${(d.itens || []).map((i) => `${i.qtd}× ${i.item}`).join(', ')} · ${money(d.totalCentavos)}`;
     case 'order.status':
-      return `Mesa ${d.mesa} · #${d.seq}: ${ORDER_STATUS_LABELS[d.de]} → ${ORDER_STATUS_LABELS[d.para]}`;
+    case 'ticket.status':
+      return `Mesa ${d.mesa} · #${d.seq}${d.tempo ? ` · ${d.tempo}` : ''}: ${ORDER_STATUS_LABELS[d.de]} → ${ORDER_STATUS_LABELS[d.para]}`;
+    case 'ticket.fire':
+      return `Mesa ${d.mesa} · #${d.seq} · ${d.tempo}`;
+    case 'tab.service':
+      return `Mesa ${d.mesa} · ${d.servico}`;
     case 'item.cancel':
       return `Mesa ${d.mesa} · #${d.seq}: ${d.qtd}× ${d.item} (${money(d.valorCentavos)}) — ${d.motivo}`;
     case 'tab.close':
-      return `Mesa ${d.mesa} · ${money(d.totalCentavos)}`;
+      return `Mesa ${d.mesa} · ${money(d.totalCentavos)}${d.servicoCentavos ? ` (serviço ${money(d.servicoCentavos)})` : ''}`;
     case 'tab.reopen':
       return `Mesa ${d.mesa} · motivo: ${d.motivo} · total anterior ${money(d.totalAnteriorCentavos)}`;
     case 'menu.update':
@@ -434,7 +282,7 @@ export default function AdminScreen() {
     setTab(t);
     localStorage.setItem('polpeteria.adminTab', t);
   };
-  const panel = useMemo(() => ({ menu: <MenuPanel />, config: <ConfigPanel />, audit: <AuditPanel />, backup: <BackupPanel /> })[tab], [tab]);
+  const panel = useMemo(() => ({ menu: <MenuEditor />, config: <ConfigPanel />, audit: <AuditPanel />, backup: <BackupPanel /> })[tab], [tab]);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <nav className="flex gap-2 overflow-x-auto border-b border-crema-300 bg-crema-50 px-3 py-2">

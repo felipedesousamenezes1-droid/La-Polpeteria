@@ -92,18 +92,35 @@ try {
   ok('garçom viu "Enviado ✓" após confirmação do servidor');
   const card = cozinha.locator('article:has-text("Mesa 5")');
   const cardText = await card.textContent();
-  assert(cardText.includes('Rotolini di Zucchine') && cardText.includes('Tiramisu'), 'cozinha vê as escolhas do Menu Completo (entrada, principal, sobremesa)');
+  assert(cardText.includes('Rotolini di Zucchine') && /tempo 1 de 3/i.test(cardText), 'cozinha recebe só a ENTRADA do Menu Completo (tempo 1 de 3)');
+  assert(!cardText.includes('Risotto') && !cardText.includes('Tiramisu'), 'prato principal e sobremesa ficam aguardando o garçom');
+  assert(!cardText.includes('Coca-Cola'), 'bebida não vai para a cozinha');
   await shot(cozinha, '04-cozinha-novo-pedido');
 
-  // ---------------- Cozinha avança: Novo → Preparando → Pronto (um toque cada)
+  // ---------------- Cozinha avança a entrada: Novo → Preparando → Pronto (um toque cada)
   await card.locator('button').first().click();
   await cozinha.waitForSelector('[data-testid=coluna-preparando] article:has-text("Mesa 5")');
   await cozinha.locator('[data-testid=coluna-preparando] article:has-text("Mesa 5") button').first().click();
   await cozinha.waitForSelector('[data-testid=coluna-pronto] article:has-text("Mesa 5")');
   ok('cozinha: Novo → Preparando → Pronto com um toque por etapa');
-  await garcom.waitForSelector('[data-testid=alerta-pronto]:has-text("Mesa 5")');
-  assert((await garcom.getAttribute('[data-testid=mesa-5]', 'data-status')) === 'pronto', 'garçom recebeu alerta "PRONTO" e a mesa 5 ficou dourada');
+  await garcom.waitForSelector('[data-testid=alerta-pronto]:has-text("Entrada PRONTO")');
+  assert((await garcom.getAttribute('[data-testid=mesa-5]', 'data-status')) === 'pronto', 'garçom recebeu alerta "Entrada PRONTO" e a mesa 5 ficou dourada');
   await shot(garcom, '05-garcom-alerta-pronto');
+  await garcom.click('[data-testid=alerta-pronto] button:has-text("Entregue")');
+  await garcom.waitForFunction(() => document.querySelector('[data-testid=mesa-5]')?.dataset.status === 'ocupada');
+  ok('garçom deu o check de "Entregue" só na entrada');
+
+  // ---------------- Garçom libera o prato principal quando o cliente terminar a entrada
+  await garcom.click('[data-testid=mesa-5]');
+  await garcom.click('[data-testid=ver-conta-mesa]');
+  await garcom.waitForSelector('[data-testid=liberar-principal]');
+  assert((await garcom.locator('[data-testid=liberar-sobremesa]').count()) === 1, 'sobremesa também aguardando, com botão próprio');
+  await shot(garcom, '10-garcom-tempos');
+  await garcom.click('[data-testid=liberar-principal]');
+  await cozinha.waitForSelector('[data-testid=coluna-novo] article:has-text("Prato principal")');
+  const principal = await cozinha.textContent('[data-testid=coluna-novo] article:has-text("Prato principal")');
+  assert(principal.includes('Risotto alla Pera') && /tempo 2 de 3/i.test(principal), 'cozinha recebeu o prato principal (tempo 2 de 3) quando o garçom liberou');
+  await garcom.click('[data-testid=voltar-mesas]');
 
   // ---------------- Queda de internet no aparelho do garçom
   await waiterCtx.setOffline(true);
@@ -130,7 +147,13 @@ try {
   await caixa.click('[data-testid=conta-mesa-5]');
   await caixa.waitForSelector('[data-testid=total-conta]');
   const total = (await caixa.textContent('[data-testid=total-conta]')).replace(/\s/g, ' ').trim();
-  assert(/R\$\s?138,00/.test(total), `conta da mesa 5 = ${total} (Menu Completo R$ 130 + Coca-Cola R$ 8)`);
+  assert(/R\$\s?151,80/.test(total), `conta da mesa 5 = ${total} (Menu Completo R$ 130 + Coca-Cola R$ 8 + serviço 10%)`);
+  await caixa.click('[data-testid=servico-caixa]');
+  await caixa.waitForFunction(() => /138,00/.test(document.querySelector('[data-testid=total-conta]')?.textContent || ''));
+  ok('caixa retirou os 10%: R$ 138,00');
+  await caixa.click('[data-testid=servico-caixa]');
+  await caixa.waitForFunction(() => /151,80/.test(document.querySelector('[data-testid=total-conta]')?.textContent || ''));
+  ok('caixa incluiu os 10% de novo: R$ 151,80');
   await shot(caixa, '08-caixa-conta');
   await caixa.click('[data-testid=fechar-conta]');
   await caixa.click('button:has-text("Fechar · R$")');
@@ -151,6 +174,10 @@ try {
   assert(kpis.includes('R$') && kpis.includes('206,00'), 'painel do Proprietário mostra as vendas do dia (R$ 206,00)');
   assert((await dono.locator('[data-testid=tabela-produtos] tbody tr:has-text("Menu Completo")').count()) === 1, 'tabela de produtos lista o Menu Completo');
   await shot(dono, '09-proprietario-painel');
+  await dono.selectOption('select[aria-label="Trocar tela"]', 'admin');
+  await dono.waitForSelector('[data-testid=nova-secao]');
+  assert((await dono.locator('[data-testid="secao-Outros"]:has-text("Taxa de rolha")').count()) === 1, 'Admin: seção "Outros" com a taxa de rolha');
+  await shot(dono, '11-admin-cardapio');
 
   assert(errors.length === 0, `sem erros de JavaScript nas páginas${errors.length ? `: ${errors.join(' | ')}` : ''}`);
   console.log(`\nResultado: ${results.length} verificações OK\n`);

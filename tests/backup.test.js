@@ -72,7 +72,8 @@ describe('Backup e recuperação', () => {
     assert.match(csvRes.headers.get('content-disposition'), /attachment/);
     const csv = await csvRes.text();
     const rows = csv.replace(/^﻿/, '').trim().split('\r\n');
-    assert.equal(rows.length, 3, 'cabeçalho + 2 itens');
+    assert.equal(rows.length, 4, 'cabeçalho + 2 itens + taxa de serviço da conta');
+    assert.match(rows[3], /Taxa de serviço \(10%\)/);
     assert.match(rows[0], /^data;pedido_n;mesa/);
     assert.match(csv, /"sem queijo; ""extra"""/, 'campos com ; e aspas escapados');
     const unit = (PRICE.refri / 100).toFixed(2).replace('.', ',');

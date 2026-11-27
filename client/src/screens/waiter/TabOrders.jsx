@@ -5,6 +5,8 @@ import { money, time, uuid } from '../../lib/util.js';
 import { ConfirmDialog, Icon, Modal, QtyStepper, EmptyState, ComboParts } from '../../components/ui.jsx';
 
 const STATUS_CHIP = {
+  aguardando: 'bg-white text-pomodoro-700 ring-1 ring-pomodoro-200',
+  sem_cozinha: 'bg-crema-200 text-seppia',
   novo: 'bg-pomodoro-100 text-pomodoro-800',
   preparando: 'bg-oro-200 text-oro-700',
   pronto: 'bg-oro-400 text-inchiostro',
@@ -168,11 +170,16 @@ export default function TabOrders({ table, tab, onBack }) {
   );
   const local = s.outbox.list.filter((e) => e.tableNumber === table && (e.status === 'pending' || e.status === 'rejected'));
 
-  async function markPicked(order) {
+  const [working, setWorking] = useState(null);
+  async function ticketAction(ticket, fn, okMsg) {
+    setWorking(ticket.id);
     try {
-      await actions.setOrderStatus(order, 'entregue');
+      await fn();
+      if (okMsg) toast(okMsg, 'ok');
     } catch (e) {
       toast(e.message, 'error');
+    } finally {
+      setWorking(null);
     }
   }
 
@@ -241,19 +248,65 @@ export default function TabOrders({ table, tab, onBack }) {
                 </li>
               ))}
             </ul>
-            {o.status === 'pronto' && !o.fullyCancelled && (
-              <button className="btn-gold mt-2 w-full" onClick={() => markPicked(o)}>
-                <Icon name="check" /> Retirei / entregue na mesa
-              </button>
+            {o.tickets?.length > 0 && (
+              <div className="mt-2 space-y-2 rounded-xl bg-crema-100 p-2" data-testid="tempos-cozinha">
+                <p className="text-xs font-bold tracking-wide text-seppia uppercase">
+                  Cozinha{o.tickets.length > 1 ? ` · ${o.tickets.length} tempos` : ''}
+                </p>
+                {o.tickets.map((t) => (
+                  <div key={t.id} className={`flex flex-col gap-2 rounded-lg bg-white px-2 py-1.5 sm:flex-row sm:items-center ${t.fullyCancelled ? 'opacity-50' : ''}`} data-testid={`tempo-${t.course}`}>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-bold">
+                        {o.tickets.length > 1 ? `${t.tempo}. ${t.label}` : 'Pratos'}
+                        <span className={`ml-2 rounded-full px-2 py-0.5 text-xs font-bold ${STATUS_CHIP[t.status]}`}>{t.fullyCancelled ? 'Cancelado' : t.status === 'entregue' ? 'Entregue ✓' : ORDER_STATUS_LABELS[t.status]}</span>
+                      </p>
+                      <p className="truncate text-xs text-seppia">{t.lines.filter((l) => l.qty > 0).map((l) => `${l.qty}× ${l.name}`).join(' · ')}</p>
+                    </div>
+                    {!t.fullyCancelled && t.status === 'aguardando' && (
+                      <button
+                        className="btn-primary !min-h-11 w-full sm:w-auto"
+                        disabled={working === t.id}
+                        onClick={() => ticketAction(t, () => actions.fireTicket(t), `Mesa ${table}: ${t.label.toLowerCase()} pedido à cozinha`)}
+                        data-testid={`liberar-${t.course}`}
+                      >
+                        Pedir à cozinha agora
+                      </button>
+                    )}
+                    {!t.fullyCancelled && t.status === 'pronto' && (
+                      <button className="btn-gold !min-h-11 w-full sm:w-auto" disabled={working === t.id} onClick={() => ticketAction(t, () => actions.setTicketStatus(t, 'entregue'))} data-testid={`entregue-${t.course}`}>
+                        <Icon name="check" /> Entregue
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
             )}
           </li>
         ))}
       </ul>
       {tab && (
         <div className="border-t-2 border-crema-300 bg-crema-50 px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+          <div className="mb-1 flex items-baseline justify-between text-sm text-seppia">
+            <span>Consumo</span>
+            <span className="tabular-nums">{money(tab.totalCents)}</span>
+          </div>
+          <div className="mb-1 flex items-center justify-between gap-2 text-sm text-seppia">
+            <span>Serviço ({tab.servicePct}%){tab.serviceEnabled ? '' : ' · retirado'}</span>
+            <span className="flex items-center gap-2">
+              <span className="tabular-nums">{money(tab.serviceCents)}</span>
+              {tab.status !== 'closed' && (
+                <button
+                  className="rounded-lg border border-crema-300 bg-white px-2 py-1 text-xs font-bold text-inchiostro"
+                  onClick={() => actions.setService(tab.id, !tab.serviceEnabled).catch((e) => toast(e.message, 'error'))}
+                >
+                  {tab.serviceEnabled ? 'Retirar' : 'Incluir'}
+                </button>
+              )}
+            </span>
+          </div>
           <div className="mb-2 flex items-baseline justify-between">
             <span className="font-semibold text-seppia">Total da mesa</span>
-            <span className="font-serif text-2xl font-bold tabular-nums">{money(tab.totalCents)}</span>
+            <span className="font-serif text-2xl font-bold tabular-nums" data-testid="total-mesa">{money(tab.grandTotalCents)}</span>
           </div>
           {tab.status === 'billing' ? (
             <p className="rounded-xl bg-pomodoro-50 p-3 text-center font-semibold text-pomodoro-800">Conta pedida às {time(tab.billRequestedAt)} · aguardando o caixa</p>
@@ -268,7 +321,7 @@ export default function TabOrders({ table, tab, onBack }) {
       <ConfirmDialog
         open={confirmBill}
         title={`Fechar a mesa ${table}?`}
-        message={`A conta (${money(tab?.totalCents)}) será enviada ao caixa. Se o cliente pedir mais alguma coisa, basta lançar normalmente.`}
+        message={`A conta (${money(tab?.grandTotalCents)}) será enviada ao caixa. Se o cliente pedir mais alguma coisa, basta lançar normalmente.`}
         confirmLabel="Enviar ao caixa"
         busy={busy}
         onCancel={() => setConfirmBill(false)}

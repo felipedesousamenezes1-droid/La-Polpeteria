@@ -1,6 +1,10 @@
 import crypto from 'node:crypto';
-import { CATEGORIES, LIMITS, ORDER_FLOW, COMBO_CATEGORY, COMBO_STEPS, MANAGER_ROLES, ROLE_LABELS } from '../shared/constants.js';
+import { LIMITS, ORDER_FLOW, COMBO_STEPS, COURSES, MENU_GROUPS, MANAGER_ROLES, ROLE_LABELS } from '../shared/constants.js';
 import { HttpError, nowIso, localDate, localDayRange, sha256, UUID_RE, cleanText, isInt } from './util.js';
+
+const STEP_COURSES = ['entrada', 'principal', 'sobremesa'];
+const VALID_COURSES = [...STEP_COURSES, 'combo'];
+const GROUP_ORDER = MENU_GROUPS.map((g) => g.key);
 
 /**
  * Regras de negócio. Toda alteração acontece dentro de uma transação síncrona do SQLite,
@@ -12,46 +16,76 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     setSetting: db.prepare(
       'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
     ),
+    // cardápio
     menuAll: db.prepare('SELECT * FROM menu_items WHERE archived = 0 ORDER BY sort, id'),
     menuUsed: db.prepare('SELECT 1 FROM order_items WHERE menu_item_id = ? LIMIT 1').pluck(),
     menuArchive: db.prepare('UPDATE menu_items SET active = 0, in_combo = 0, archived = 1, updated_at = ? WHERE id = ?'),
     menuDelete: db.prepare('DELETE FROM menu_items WHERE id = ?'),
     menuById: db.prepare('SELECT * FROM menu_items WHERE id = ?'),
-    menuMaxSort: db.prepare('SELECT COALESCE(MAX(sort), 0) FROM menu_items').pluck(),
+    menuMaxSortInCat: db.prepare('SELECT COALESCE(MAX(sort), 0) FROM menu_items WHERE category = ? AND archived = 0').pluck(),
+    menuInCat: db.prepare('SELECT * FROM menu_items WHERE category = ? AND archived = 0 ORDER BY sort, id'),
+    menuSetSort: db.prepare('UPDATE menu_items SET sort = ? WHERE id = ?'),
+    menuRenameCat: db.prepare('UPDATE menu_items SET category = ? WHERE category = ?'),
+    menuCountInCat: db.prepare('SELECT COUNT(*) FROM menu_items WHERE category = ? AND archived = 0').pluck(),
     insertMenu: db.prepare(`INSERT INTO menu_items (name, description, category, price_cents, active, in_combo, sort, created_at, updated_at)
       VALUES (@name, @description, @category, @price_cents, @active, @in_combo, @sort, @now, @now)`),
     updateMenu: db.prepare(`UPDATE menu_items SET name = @name, description = @description, category = @category,
       price_cents = @price_cents, active = @active, in_combo = @in_combo, updated_at = @now WHERE id = @id`),
+    // seções
+    catAll: db.prepare('SELECT * FROM menu_categories ORDER BY sort, name'),
+    catByName: db.prepare('SELECT * FROM menu_categories WHERE name = ?'),
+    catByNameCI: db.prepare('SELECT * FROM menu_categories WHERE lower(name) = lower(?)'),
+    catInsert: db.prepare('INSERT INTO menu_categories (name, group_key, sort, kitchen, course, in_service) VALUES (?, ?, ?, ?, ?, ?)'),
+    catUpdate: db.prepare('UPDATE menu_categories SET name = ?, group_key = ?, kitchen = ?, course = ?, in_service = ? WHERE name = ?'),
+    catDelete: db.prepare('DELETE FROM menu_categories WHERE name = ?'),
+    catSetSort: db.prepare('UPDATE menu_categories SET sort = ? WHERE name = ?'),
+    catInGroup: db.prepare('SELECT * FROM menu_categories WHERE group_key = ? ORDER BY sort, name'),
+    catMaxSortInGroup: db.prepare('SELECT COALESCE(MAX(sort), 0) FROM menu_categories WHERE group_key = ?').pluck(),
+    // contas
     tabById: db.prepare('SELECT * FROM tabs WHERE id = ?'),
     activeTabForTable: db.prepare("SELECT * FROM tabs WHERE table_number = ? AND status <> 'closed'"),
     maxActiveTable: db.prepare("SELECT COALESCE(MAX(table_number), 0) FROM tabs WHERE status <> 'closed'").pluck(),
-    insertTab: db.prepare(`INSERT INTO tabs (id, table_number, status, business_date, opened_at, opened_by_role, opened_by_name)
-      VALUES (@id, @table_number, 'open', @business_date, @opened_at, @opened_by_role, @opened_by_name)`),
+    insertTab: db.prepare(`INSERT INTO tabs (id, table_number, status, business_date, opened_at, opened_by_role, opened_by_name, service_enabled, service_pct)
+      VALUES (@id, @table_number, 'open', @business_date, @opened_at, @opened_by_role, @opened_by_name, @service_enabled, @service_pct)`),
     setTabStatus: db.prepare('UPDATE tabs SET status = ?, bill_requested_at = ? WHERE id = ?'),
+    setTabService: db.prepare("UPDATE tabs SET service_enabled = ? WHERE id = ? AND status <> 'closed'"),
     closeTab: db.prepare(`UPDATE tabs SET status = 'closed', closed_at = @closed_at, closed_by_role = @role,
-      closed_by_name = @name, closed_total_cents = @total WHERE id = @id AND status <> 'closed'`),
+      closed_by_name = @name, closed_total_cents = @total, closed_service_cents = @service WHERE id = @id AND status <> 'closed'`),
     reopenTab: db.prepare(`UPDATE tabs SET status = 'open', bill_requested_at = NULL, closed_at = NULL, closed_by_role = NULL,
-      closed_by_name = NULL, closed_total_cents = NULL, reopen_count = reopen_count + 1 WHERE id = ? AND status = 'closed'`),
+      closed_by_name = NULL, closed_total_cents = NULL, closed_service_cents = NULL, reopen_count = reopen_count + 1
+      WHERE id = ? AND status = 'closed'`),
     tabTotal: db.prepare(`
-      SELECT COALESCE(SUM((i.qty - COALESCE(c.cq, 0)) * i.unit_price_cents), 0)
+      SELECT COALESCE(SUM((i.qty - COALESCE(c.cq, 0)) * i.unit_price_cents), 0) AS items,
+             COALESCE(SUM(CASE WHEN i.in_service = 1 THEN (i.qty - COALESCE(c.cq, 0)) * i.unit_price_cents ELSE 0 END), 0) AS base
       FROM order_items i
       JOIN orders o ON o.id = i.order_id
       LEFT JOIN (SELECT order_item_id, SUM(qty) AS cq FROM cancellations GROUP BY order_item_id) c ON c.order_item_id = i.id
-      WHERE o.tab_id = ?`).pluck(),
+      WHERE o.tab_id = ?`),
+    // pedidos
     orderById: db.prepare('SELECT * FROM orders WHERE id = ?'),
     nextSeq: db.prepare('SELECT COALESCE(MAX(seq), 0) + 1 FROM orders WHERE business_date = ?').pluck(),
     insertOrder: db.prepare(`INSERT INTO orders (id, tab_id, table_number, seq, business_date, status, created_by_role,
       created_by_name, device_id, client_created_at, received_at, status_changed_at, payload_hash)
       VALUES (@id, @tab_id, @table_number, @seq, @business_date, 'novo', @created_by_role, @created_by_name, @device_id,
       @client_created_at, @received_at, @received_at, @payload_hash)`),
-    insertItem: db.prepare(`INSERT INTO order_items (id, order_id, line_no, menu_item_id, name, category, unit_price_cents, qty, notes, components, created_at)
-      VALUES (@id, @order_id, @line_no, @menu_item_id, @name, @category, @unit_price_cents, @qty, @notes, @components, @created_at)`),
-    setOrderStatus: db.prepare('UPDATE orders SET status = ?, status_changed_at = ? WHERE id = ? AND status = ?'),
+    insertItem: db.prepare(`INSERT INTO order_items (id, order_id, line_no, menu_item_id, name, category, unit_price_cents, qty, notes,
+      components, kitchen_course, in_service, created_at)
+      VALUES (@id, @order_id, @line_no, @menu_item_id, @name, @category, @unit_price_cents, @qty, @notes,
+      @components, @kitchen_course, @in_service, @created_at)`),
     itemById: db.prepare('SELECT * FROM order_items WHERE id = ?'),
     cancelledQty: db.prepare('SELECT COALESCE(SUM(qty), 0) FROM cancellations WHERE order_item_id = ?').pluck(),
     cancellationById: db.prepare('SELECT * FROM cancellations WHERE id = ?'),
     insertCancellation: db.prepare(`INSERT INTO cancellations (id, order_item_id, qty, reason, by_role, by_name, device_id, created_at)
       VALUES (@id, @order_item_id, @qty, @reason, @by_role, @by_name, @device_id, @created_at)`),
+    // tempos da cozinha
+    ticketById: db.prepare('SELECT * FROM kitchen_tickets WHERE id = ?'),
+    insertTicket: db.prepare(`INSERT INTO kitchen_tickets (id, order_id, course, tempo, status, created_at, fired_at, status_changed_at)
+      VALUES (@id, @order_id, @course, @tempo, @status, @now, @fired_at, @now)`),
+    setTicketStatus: db.prepare(`UPDATE kitchen_tickets SET status = @to, status_changed_at = @now,
+      ready_at = CASE WHEN @to = 'pronto' THEN COALESCE(ready_at, @now) ELSE ready_at END
+      WHERE id = @id AND status = @from`),
+    fireTicket: db.prepare(`UPDATE kitchen_tickets SET status = 'novo', fired_at = @now, status_changed_at = @now
+      WHERE id = @id AND status = 'aguardando'`),
   };
 
   // ---------------------------------------------------------------- leitura
@@ -62,8 +96,28 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       warnMinutes: Number(q.getSetting.get('warn_minutes')),
       lateMinutes: Number(q.getSetting.get('late_minutes')),
       proposalTitle: q.getSetting.get('proposal_title') || 'Proposta do mês',
+      serviceDefault: q.getSetting.get('service_default') !== '0',
+      servicePct: Number(q.getSetting.get('service_pct') ?? 10),
     };
   }
+
+  const serializeCategory = (c) => ({
+    name: c.name,
+    group: c.group_key,
+    sort: c.sort,
+    kitchen: !!c.kitchen,
+    course: c.course || null,
+    inService: !!c.in_service,
+  });
+
+  /** Seções na ordem do cardápio: grupo (Bebidas, Proposta, Vinhos, Outros) e depois a ordem da seção. */
+  function categories() {
+    return q.catAll
+      .all()
+      .map(serializeCategory)
+      .sort((a, b) => GROUP_ORDER.indexOf(a.group) - GROUP_ORDER.indexOf(b.group) || a.sort - b.sort || a.name.localeCompare(b.name));
+  }
+  const catMap = () => new Map(q.catAll.all().map((c) => [c.name, c]));
 
   const serializeMenuItem = (m) => ({
     id: m.id,
@@ -77,7 +131,30 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
   });
 
   function menu() {
-    return q.menuAll.all().map(serializeMenuItem);
+    const order = new Map(categories().map((c, i) => [c.name, i]));
+    return q.menuAll
+      .all()
+      .map(serializeMenuItem)
+      .sort((a, b) => (order.get(a.category) ?? 999) - (order.get(b.category) ?? 999) || a.sort - b.sort || a.id - b.id);
+  }
+
+  function emitMenu() {
+    emit('menu:changed', { menu: menu(), categories: categories() });
+  }
+
+  /** Valores de uma conta: consumo, taxa de serviço (sobre as seções que entram nos 10%) e total a pagar. */
+  function tabMoney(t) {
+    const { items, base } = q.tabTotal.get(t.id);
+    const serviceEnabled = !!t.service_enabled;
+    const serviceCents = serviceEnabled ? Math.round((base * t.service_pct) / 100) : 0;
+    return {
+      totalCents: items,
+      serviceBaseCents: base,
+      serviceEnabled,
+      servicePct: t.service_pct,
+      serviceCents,
+      grandTotalCents: items + serviceCents,
+    };
   }
 
   function serializeTab(t) {
@@ -93,8 +170,9 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       closedAt: t.closed_at,
       closedBy: t.closed_at ? { role: t.closed_by_role, name: t.closed_by_name } : null,
       closedTotalCents: t.closed_total_cents,
+      closedServiceCents: t.closed_service_cents,
       reopenCount: t.reopen_count,
-      totalCents: q.tabTotal.get(t.id),
+      ...tabMoney(t),
     };
   }
 
@@ -102,7 +180,33 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     return serializeTab(q.tabById.get(id));
   }
 
-  /** Carrega pedidos completos (itens + cancelamentos) que satisfazem uma cláusula WHERE. */
+  /** Linhas de um tempo da cozinha: itens inteiros desse tempo + escolhas do Menu Completo desse tempo. */
+  function ticketLines(items, course) {
+    const lines = [];
+    for (const i of items) {
+      const last = i.cancellations.length ? i.cancellations[i.cancellations.length - 1].reason : null;
+      if (i.kitchenCourse === course) {
+        lines.push({ itemId: i.id, name: i.name, qty: i.activeQty, sentQty: i.qty, cancelledQty: i.cancelledQty, notes: i.notes, components: i.components, fromCombo: null, lastCancelReason: last });
+      } else if (i.kitchenCourse === 'combo') {
+        for (const c of i.components) {
+          if (c.course === course) {
+            lines.push({ itemId: i.id, name: c.name, qty: i.activeQty, sentQty: i.qty, cancelledQty: i.cancelledQty, notes: i.notes, components: [], fromCombo: i.name, lastCancelReason: last });
+          }
+        }
+      }
+    }
+    return lines;
+  }
+
+  function aggregateStatus(tickets) {
+    if (!tickets.length) return 'sem_cozinha';
+    const live = tickets.filter((t) => !t.fullyCancelled);
+    if (!live.length) return 'entregue';
+    for (const s of ['pronto', 'preparando', 'novo', 'aguardando']) if (live.some((t) => t.status === s)) return s;
+    return 'entregue';
+  }
+
+  /** Carrega pedidos completos (itens, cancelamentos e tempos da cozinha) que satisfazem uma cláusula WHERE. */
   function loadOrders(whereSql, params = []) {
     const rows = db.prepare(`SELECT * FROM orders WHERE ${whereSql} ORDER BY received_at, seq`).all(...params);
     if (!rows.length) return [];
@@ -116,17 +220,14 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
          WHERE i.order_id IN (SELECT value FROM json_each(?)) ORDER BY c.created_at`,
       )
       .all(ids);
+    const tickets = db
+      .prepare('SELECT * FROM kitchen_tickets WHERE order_id IN (SELECT value FROM json_each(?)) ORDER BY tempo')
+      .all(ids);
 
     const cancelsByItem = new Map();
     for (const c of cancels) {
       if (!cancelsByItem.has(c.order_item_id)) cancelsByItem.set(c.order_item_id, []);
-      cancelsByItem.get(c.order_item_id).push({
-        id: c.id,
-        qty: c.qty,
-        reason: c.reason,
-        by: { role: c.by_role, name: c.by_name },
-        createdAt: c.created_at,
-      });
+      cancelsByItem.get(c.order_item_id).push({ id: c.id, qty: c.qty, reason: c.reason, by: { role: c.by_role, name: c.by_name }, createdAt: c.created_at });
     }
     const itemsByOrder = new Map();
     for (const i of items) {
@@ -145,28 +246,56 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
         activeQty: i.qty - cancelledQty,
         notes: i.notes,
         components: JSON.parse(i.components || '[]'),
+        kitchenCourse: i.kitchen_course,
+        inService: !!i.in_service,
         createdAt: i.created_at,
         cancellations: cl,
       });
     }
+    const ticketsByOrder = new Map();
+    for (const t of tickets) {
+      if (!ticketsByOrder.has(t.order_id)) ticketsByOrder.set(t.order_id, []);
+      ticketsByOrder.get(t.order_id).push(t);
+    }
     return rows.map((o) => {
       const its = itemsByOrder.get(o.id) || [];
       const allCancels = its.flatMap((i) => i.cancellations);
+      const lastCancelledAt = allCancels.length ? allCancels[allCancels.length - 1].createdAt : null;
+      const raw = ticketsByOrder.get(o.id) || [];
+      const ts = raw.map((t) => {
+        const lines = ticketLines(its, t.course);
+        return {
+          id: t.id,
+          orderId: o.id,
+          course: t.course,
+          tempo: t.tempo,
+          tempos: raw.length,
+          label: COURSES[t.course]?.label || 'Cozinha',
+          status: t.status,
+          firedAt: t.fired_at,
+          readyAt: t.ready_at,
+          statusChangedAt: t.status_changed_at,
+          lines,
+          fullyCancelled: lines.length > 0 && lines.every((l) => l.qty === 0),
+          lastCancelledAt,
+        };
+      });
       return {
         id: o.id,
         tabId: o.tab_id,
         tableNumber: o.table_number,
         seq: o.seq,
         businessDate: o.business_date,
-        status: o.status,
+        status: aggregateStatus(ts),
         createdBy: { role: o.created_by_role, name: o.created_by_name, deviceId: o.device_id },
         clientCreatedAt: o.client_created_at,
         receivedAt: o.received_at,
         statusChangedAt: o.status_changed_at,
         items: its,
+        tickets: ts,
         totalCents: its.reduce((s, i) => s + i.activeQty * i.unitPriceCents, 0),
         fullyCancelled: its.length > 0 && its.every((i) => i.activeQty === 0),
-        lastCancelledAt: allCancels.length ? allCancels[allCancels.length - 1].createdAt : null,
+        lastCancelledAt,
       };
     });
   }
@@ -185,10 +314,11 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       .map(serializeTab);
     const tabIds = JSON.stringify(tabs.map((t) => t.id));
     const orders = loadOrders(
-      "tab_id IN (SELECT value FROM json_each(?)) OR status IN ('novo', 'preparando', 'pronto')",
+      `tab_id IN (SELECT value FROM json_each(?))
+       OR id IN (SELECT order_id FROM kitchen_tickets WHERE status IN ('aguardando', 'novo', 'preparando', 'pronto'))`,
       [tabIds],
     );
-    return { serverTime: nowIso(), today, settings: settings(), menu: menu(), tabs, orders };
+    return { serverTime: nowIso(), today, settings: settings(), categories: categories(), menu: menu(), tabs, orders };
   }
 
   // ---------------------------------------------------------------- pedidos
@@ -220,9 +350,9 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     return { id, tableNumber, tabId, items, clientCreatedAt };
   }
 
-  /** Menu Completo: exige uma escolha válida por etapa e congela os nomes escolhidos. */
-  function resolveComponents(menuRow, ids) {
-    if (menuRow.category !== COMBO_CATEGORY) {
+  /** Menu Completo: exige uma escolha válida por etapa e congela nomes e tempos escolhidos. */
+  function resolveComponents(menuRow, ids, cats) {
+    if (cats.get(menuRow.category)?.course !== 'combo') {
       if (ids.length) throw new HttpError(400, 'BAD_COMBO', `"${menuRow.name}" não é um Menu Completo.`);
       return [];
     }
@@ -231,10 +361,10 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     }
     return COMBO_STEPS.map((step, i) => {
       const c = q.menuById.get(ids[i]);
-      if (!c || !step.categories.includes(c.category)) {
+      if (!c || cats.get(c.category)?.course !== step.key) {
         throw new HttpError(400, 'BAD_COMBO', `Escolha inválida para "${step.label}" no Menu Completo.`);
       }
-      return { step: step.label, menuItemId: c.id, name: c.name };
+      return { step: step.label, course: step.key, menuItemId: c.id, name: c.name };
     });
   }
 
@@ -248,18 +378,40 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
         throw new HttpError(409, 'ID_CONFLICT', 'Já existe um pedido com este identificador e conteúdo diferente.');
       }
       audit.log(actor, 'order.resend_ignored', 'order', v.id, { seq: existing.seq, mesa: existing.table_number });
-      return { duplicate: true, orderId: v.id, tabEvents: false };
+      return { duplicate: true, orderId: v.id };
     }
 
-    const { tableCount } = settings();
-    if (v.tableNumber > tableCount) throw new HttpError(400, 'BAD_TABLE', `A mesa ${v.tableNumber} não existe.`);
+    const cfg = settings();
+    if (v.tableNumber > cfg.tableCount) throw new HttpError(400, 'BAD_TABLE', `A mesa ${v.tableNumber} não existe.`);
 
-    const menuRows = v.items.map((i) => {
-      const m = q.menuById.get(i.menuItemId);
+    const cats = catMap();
+    const lines = v.items.map((it) => {
+      const m = q.menuById.get(it.menuItemId);
       if (!m) throw new HttpError(400, 'UNKNOWN_ITEM', 'Um dos itens não existe no cardápio.');
-      return m;
+      const cat = cats.get(m.category);
+      return {
+        it,
+        m,
+        cat,
+        comps: resolveComponents(m, it.components, cats),
+        kitchen: !!cat?.kitchen,
+        inService: cat ? !!cat.in_service : true,
+        isCombo: cat?.course === 'combo',
+      };
     });
-    const componentsByLine = v.items.map((i, idx) => resolveComponents(menuRows[idx], i.components));
+
+    // Tempos: pedido com Menu Completo é dividido (entrada sai já; principal e sobremesa aguardam o garçom).
+    // Sem Menu Completo, toda a comida sai junta. Bebidas e "Outros" não vão para a cozinha.
+    const split = lines.some((l) => l.isCombo && l.kitchen);
+    const courses = new Set();
+    for (const l of lines) {
+      if (!l.kitchen) l.course = null;
+      else if (!split) l.course = 'unico';
+      else if (l.isCombo) l.course = 'combo';
+      else l.course = STEP_COURSES.includes(l.cat?.course) ? l.cat.course : 'entrada';
+      if (l.course === 'combo') l.comps.forEach((c) => courses.add(c.course));
+      else if (l.course) courses.add(l.course);
+    }
 
     const now = nowIso();
     let tab;
@@ -282,9 +434,11 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
           opened_at: now,
           opened_by_role: actor.role,
           opened_by_name: actor.name ?? null,
+          service_enabled: cfg.serviceDefault ? 1 : 0,
+          service_pct: cfg.servicePct,
         };
         q.insertTab.run(newTab);
-        audit.log(actor, 'tab.open', 'tab', newTab.id, { mesa: v.tableNumber });
+        audit.log(actor, 'tab.open', 'tab', newTab.id, { mesa: v.tableNumber, servico: newTab.service_enabled ? `${cfg.servicePct}%` : 'não' });
         tab = q.tabById.get(newTab.id);
       }
     }
@@ -309,34 +463,48 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       payload_hash: payloadHash,
     });
     let total = 0;
-    v.items.forEach((it, idx) => {
-      const m = menuRows[idx];
-      total += m.price_cents * it.qty;
+    lines.forEach((l, idx) => {
+      total += l.m.price_cents * l.it.qty;
       q.insertItem.run({
         id: crypto.randomUUID(),
         order_id: v.id,
         line_no: idx + 1,
-        menu_item_id: m.id,
-        name: m.name,
-        category: m.category,
-        unit_price_cents: m.price_cents, // preço congelado no momento do pedido
-        qty: it.qty,
-        notes: it.notes,
-        components: JSON.stringify(componentsByLine[idx]),
+        menu_item_id: l.m.id,
+        name: l.m.name,
+        category: l.m.category,
+        unit_price_cents: l.m.price_cents, // preço congelado no momento do pedido
+        qty: l.it.qty,
+        notes: l.it.notes,
+        components: JSON.stringify(l.comps),
+        kitchen_course: l.course,
+        in_service: l.inService ? 1 : 0,
         created_at: now,
+      });
+    });
+    const ordered = [...courses].sort((a, b) => COURSES[a].tempo - COURSES[b].tempo);
+    ordered.forEach((course, i) => {
+      q.insertTicket.run({
+        id: `${v.id}:${course}`,
+        order_id: v.id,
+        course,
+        tempo: i + 1,
+        status: i === 0 ? 'novo' : 'aguardando',
+        fired_at: i === 0 ? now : null,
+        now,
       });
     });
     audit.log(actor, 'order.create', 'order', v.id, {
       seq,
       mesa: v.tableNumber,
       conta: tab.id,
-      itens: v.items.map((it, idx) => ({
-        item: menuRows[idx].name,
-        qtd: it.qty,
-        precoCentavos: menuRows[idx].price_cents,
-        obs: it.notes || undefined,
-        escolhas: componentsByLine[idx].length ? componentsByLine[idx].map((c) => c.name) : undefined,
+      itens: lines.map((l) => ({
+        item: l.m.name,
+        qtd: l.it.qty,
+        precoCentavos: l.m.price_cents,
+        obs: l.it.notes || undefined,
+        escolhas: l.comps.length ? l.comps.map((c) => c.name) : undefined,
       })),
+      tempos: ordered.map((c) => COURSES[c].label),
       totalCentavos: total,
     });
     return { duplicate: false, orderId: v.id };
@@ -353,30 +521,53 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     return { order, duplicate: r.duplicate };
   }
 
-  function setOrderStatus(actor, orderId, from, to) {
+  function ticketContext(ticketId) {
+    const t = q.ticketById.get(ticketId);
+    if (!t) throw new HttpError(404, 'NOT_FOUND', 'Tempo da cozinha não encontrado.');
+    const order = getOrder(t.order_id);
+    return { t, order, ticket: order.tickets.find((x) => x.id === ticketId) };
+  }
+
+  /** Andamento de um tempo na cozinha: Novo → Preparando → Pronto → Entregue (um passo por vez). */
+  function setTicketStatus(actor, ticketId, from, to) {
+    let orderId;
     db.transaction(() => {
-      const o = q.orderById.get(orderId);
-      if (!o) throw new HttpError(404, 'NOT_FOUND', 'Pedido não encontrado.');
+      const { t, order, ticket } = ticketContext(ticketId);
+      orderId = order.id;
       const fi = ORDER_FLOW.indexOf(from);
       const ti = ORDER_FLOW.indexOf(to);
-      if (fi < 0 || ti < 0 || Math.abs(ti - fi) !== 1) {
-        throw new HttpError(400, 'INVALID_TRANSITION', 'Mudança de status inválida.');
-      }
-      if (o.status !== from) {
-        throw new HttpError(409, 'STATUS_CONFLICT', 'O pedido já foi atualizado em outro aparelho.', { order: getOrder(orderId) });
+      if (fi < 0 || ti < 0 || Math.abs(ti - fi) !== 1) throw new HttpError(400, 'INVALID_TRANSITION', 'Mudança de status inválida.');
+      if (t.status !== from) {
+        throw new HttpError(409, 'STATUS_CONFLICT', 'Este prato já foi atualizado em outro aparelho.', { order });
       }
       const kitchenLike = actor.role === 'cozinha' || MANAGER_ROLES.includes(actor.role);
       const pickupOnly = (from === 'pronto' && to === 'entregue') || (from === 'entregue' && to === 'pronto');
       if (!kitchenLike && !pickupOnly) throw new HttpError(403, 'FORBIDDEN', 'Somente a cozinha altera o preparo.');
-      const order = getOrder(orderId);
-      if (order.fullyCancelled && ti > fi) throw new HttpError(409, 'ORDER_CANCELLED', 'Este pedido foi totalmente cancelado.');
-      const changed = q.setOrderStatus.run(to, nowIso(), orderId, from).changes;
-      if (changed !== 1) throw new HttpError(409, 'STATUS_CONFLICT', 'O pedido já foi atualizado em outro aparelho.');
-      audit.log(actor, 'order.status', 'order', orderId, { seq: o.seq, mesa: o.table_number, de: from, para: to });
+      if (ticket.fullyCancelled && ti > fi) throw new HttpError(409, 'ORDER_CANCELLED', 'Este prato foi totalmente cancelado.');
+      const changed = q.setTicketStatus.run({ id: ticketId, from, to, now: nowIso() }).changes;
+      if (changed !== 1) throw new HttpError(409, 'STATUS_CONFLICT', 'Este prato já foi atualizado em outro aparelho.');
+      audit.log(actor, 'ticket.status', 'order', order.id, { seq: order.seq, mesa: order.tableNumber, tempo: ticket.label, de: from, para: to });
     })();
     const order = getOrder(orderId);
     emit('order:upsert', order);
-    if (to === 'pronto' && from === 'preparando') emit('order:ready', order);
+    return order;
+  }
+
+  /** Garçom libera um tempo que estava aguardando (ex.: prato principal depois da entrada). */
+  function fireTicket(actor, ticketId) {
+    if (actor.role === 'cozinha') throw new HttpError(403, 'FORBIDDEN', 'Quem libera o próximo tempo é o garçom.');
+    let orderId;
+    let changed = 0;
+    db.transaction(() => {
+      const { t, order, ticket } = ticketContext(ticketId);
+      orderId = order.id;
+      if (t.status !== 'aguardando') return; // já liberado (toque repetido ou outro aparelho): nada a fazer
+      if (ticket.fullyCancelled) throw new HttpError(409, 'ORDER_CANCELLED', 'Este prato foi totalmente cancelado.');
+      changed = q.fireTicket.run({ id: ticketId, now: nowIso() }).changes;
+      if (changed) audit.log(actor, 'ticket.fire', 'order', order.id, { seq: order.seq, mesa: order.tableNumber, tempo: ticket.label });
+    })();
+    const order = getOrder(orderId);
+    if (changed) emit('order:upsert', order);
     return order;
   }
 
@@ -449,6 +640,22 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     return tab;
   }
 
+  /** Incluir ou retirar a taxa de serviço de uma conta (calculada automaticamente). */
+  function setService(actor, tabId, enabled) {
+    if (typeof enabled !== 'boolean') throw new HttpError(400, 'BAD_REQUEST', 'Informe se a taxa de serviço está incluída.');
+    db.transaction(() => {
+      const tab = q.tabById.get(tabId);
+      if (!tab) throw new HttpError(404, 'NOT_FOUND', 'Conta não encontrada.');
+      if (tab.status === 'closed') throw new HttpError(409, 'TAB_CLOSED', 'A conta já foi fechada. Reabra-a no caixa com o PIN de Admin.');
+      if (!!tab.service_enabled === enabled) return;
+      q.setTabService.run(enabled ? 1 : 0, tabId);
+      audit.log(actor, 'tab.service', 'tab', tabId, { mesa: tab.table_number, servico: enabled ? `incluído (${tab.service_pct}%)` : 'retirado' });
+    })();
+    const tab = getTab(tabId);
+    emit('tab:upsert', tab);
+    return tab;
+  }
+
   function getBill(tabId) {
     const tab = getTab(tabId);
     if (!tab) throw new HttpError(404, 'NOT_FOUND', 'Conta não encontrada.');
@@ -466,6 +673,7 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
             category: i.category,
             notes: i.notes,
             components: i.components,
+            inService: i.inService,
             qty: i.activeQty,
             unitPriceCents: i.unitPriceCents,
             subtotalCents: i.activeQty * i.unitPriceCents,
@@ -492,13 +700,19 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
         }
       }
     }
-    const totalCents = lines.reduce((s, l) => s + l.subtotalCents, 0);
-    const pendingKitchen = orders.filter((o) => !o.fullyCancelled && (o.status === 'novo' || o.status === 'preparando')).length;
+    const pendingKitchen = orders
+      .flatMap((o) => o.tickets)
+      .filter((t) => !t.fullyCancelled && ['aguardando', 'novo', 'preparando'].includes(t.status)).length;
     return {
       tab,
       lines,
       cancelled,
-      totalCents,
+      totalCents: tab.totalCents,
+      serviceEnabled: tab.serviceEnabled,
+      servicePct: tab.servicePct,
+      serviceBaseCents: tab.serviceBaseCents,
+      serviceCents: tab.serviceCents,
+      grandTotalCents: tab.grandTotalCents,
       cancelledTotalCents: cancelled.reduce((s, c) => s + c.valueCents, 0),
       itemsCount: lines.reduce((s, l) => s + l.qty, 0),
       ordersCount: orders.length,
@@ -507,6 +721,7 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     };
   }
 
+  /** Fecha a conta pelo total a pagar conferido (consumo + serviço). */
   function closeTab(actor, tabId, expectedTotalCents) {
     if (!Number.isInteger(expectedTotalCents)) {
       throw new HttpError(400, 'EXPECTED_TOTAL_REQUIRED', 'Informe o total conferido para fechar a conta.');
@@ -515,17 +730,21 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       const tab = q.tabById.get(tabId);
       if (!tab) throw new HttpError(404, 'NOT_FOUND', 'Conta não encontrada.');
       if (tab.status === 'closed') throw new HttpError(409, 'ALREADY_CLOSED', 'Esta conta já está fechada.');
-      const total = q.tabTotal.get(tabId);
-      if (total !== expectedTotalCents) {
-        throw new HttpError(409, 'TOTAL_CHANGED', 'A conta mudou enquanto você conferia (novos itens ou cancelamentos). Confira novamente.', {
-          totalCents: total,
+      const money = tabMoney(tab);
+      if (money.grandTotalCents !== expectedTotalCents) {
+        throw new HttpError(409, 'TOTAL_CHANGED', 'A conta mudou enquanto você conferia (itens, cancelamentos ou taxa de serviço). Confira novamente.', {
+          grandTotalCents: money.grandTotalCents,
         });
       }
-      q.closeTab.run({ id: tabId, closed_at: nowIso(), role: actor.role, name: actor.name ?? null, total });
-      audit.log(actor, 'tab.close', 'tab', tabId, { mesa: tab.table_number, totalCentavos: total });
+      q.closeTab.run({ id: tabId, closed_at: nowIso(), role: actor.role, name: actor.name ?? null, total: money.grandTotalCents, service: money.serviceCents });
+      audit.log(actor, 'tab.close', 'tab', tabId, {
+        mesa: tab.table_number,
+        consumoCentavos: money.totalCents,
+        servicoCentavos: money.serviceCents,
+        totalCentavos: money.grandTotalCents,
+      });
     })();
-    const tab = getTab(tabId);
-    emit('tab:upsert', tab);
+    emit('tab:upsert', getTab(tabId));
     return getBill(tabId);
   }
 
@@ -559,7 +778,7 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     return tab;
   }
 
-  // ---------------------------------------------------------------- administração
+  // ---------------------------------------------------------------- cardápio (Admin)
 
   function validateMenuInput(input, current) {
     const name = cleanText(input.name ?? current?.name, 80);
@@ -569,19 +788,27 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     const active = input.active ?? (current ? !!current.active : true);
     const inCombo = input.inCombo ?? (current ? !!current.in_combo : false);
     if (name.length < 2) throw new HttpError(400, 'BAD_NAME', 'Informe o nome do item.');
-    if (!CATEGORIES.includes(category)) throw new HttpError(400, 'BAD_CATEGORY', 'Categoria inválida.');
+    const cat = q.catByName.get(category ?? '');
+    if (!cat) throw new HttpError(400, 'BAD_CATEGORY', 'Seção inválida.');
     if (!isInt(priceCents, 0, 10_000_000)) throw new HttpError(400, 'BAD_PRICE', 'Preço inválido.');
-    return { name, description, category, price_cents: priceCents, active: active ? 1 : 0, in_combo: inCombo && category !== COMBO_CATEGORY ? 1 : 0 };
+    return {
+      name,
+      description,
+      category,
+      price_cents: priceCents,
+      active: active ? 1 : 0,
+      in_combo: inCombo && STEP_COURSES.includes(cat.course) ? 1 : 0,
+    };
   }
 
   function createMenuItem(actor, input) {
     const v = validateMenuInput(input || {});
     const id = db.transaction(() => {
-      const info = q.insertMenu.run({ ...v, sort: q.menuMaxSort.get() + 10, now: nowIso() });
+      const info = q.insertMenu.run({ ...v, sort: q.menuMaxSortInCat.get(v.category) + 10, now: nowIso() });
       audit.log(actor, 'menu.create', 'menu_item', info.lastInsertRowid, v);
       return Number(info.lastInsertRowid);
     })();
-    emit('menu:changed', menu());
+    emitMenu();
     return serializeMenuItem(q.menuById.get(id));
   }
 
@@ -591,11 +818,12 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       if (!current || current.archived) throw new HttpError(404, 'NOT_FOUND', 'Item não encontrado.');
       const v = validateMenuInput(input || {}, current);
       q.updateMenu.run({ ...v, id, now: nowIso() });
+      if (v.category !== current.category) q.menuSetSort.run(q.menuMaxSortInCat.get(v.category) + 10, id);
       const before = { name: current.name, description: current.description, category: current.category, price_cents: current.price_cents, active: current.active, in_combo: current.in_combo };
       const changes = Object.fromEntries(Object.keys(v).filter((k) => v[k] !== before[k]).map((k) => [k, { de: before[k], para: v[k] }]));
       audit.log(actor, 'menu.update', 'menu_item', id, { item: current.name, alteracoes: changes });
     })();
-    emit('menu:changed', menu());
+    emitMenu();
     return serializeMenuItem(q.menuById.get(id));
   }
 
@@ -610,9 +838,106 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       audit.log(actor, 'menu.delete', 'menu_item', id, { item: current.name, modo: used ? 'arquivado (já consta em pedidos)' : 'excluído' });
       return used ? 'archived' : 'deleted';
     })();
-    emit('menu:changed', menu());
+    emitMenu();
     return { result };
   }
+
+  /** Troca a posição com o vizinho (dir = -1 sobe, +1 desce), renumerando a lista. */
+  function moveInList(list, index, dir, setSort) {
+    const target = index + dir;
+    if (index < 0 || target < 0 || target >= list.length) return false;
+    const arr = [...list];
+    [arr[index], arr[target]] = [arr[target], arr[index]];
+    arr.forEach((row, i) => setSort((i + 1) * 10, row));
+    return true;
+  }
+
+  function moveMenuItem(actor, id, dir) {
+    if (dir !== -1 && dir !== 1) throw new HttpError(400, 'BAD_REQUEST', 'Direção inválida.');
+    db.transaction(() => {
+      const current = q.menuById.get(id);
+      if (!current || current.archived) throw new HttpError(404, 'NOT_FOUND', 'Item não encontrado.');
+      const list = q.menuInCat.all(current.category);
+      if (moveInList(list, list.findIndex((m) => m.id === id), dir, (sort, row) => q.menuSetSort.run(sort, row.id))) {
+        audit.log(actor, 'menu.move', 'menu_item', id, { item: current.name, direcao: dir < 0 ? 'acima' : 'abaixo' });
+      }
+    })();
+    emitMenu();
+    return menu();
+  }
+
+  // ---------------------------------------------------------------- seções do cardápio (Admin)
+
+  function validateCategoryInput(input, current) {
+    const name = cleanText(input.name ?? current?.name, LIMITS.maxCategoryName);
+    const group = input.group ?? current?.group_key;
+    const kitchen = input.kitchen ?? (current ? !!current.kitchen : false);
+    const rawCourse = input.course === undefined ? current?.course : input.course;
+    const course = rawCourse ? String(rawCourse) : null;
+    const inService = input.inService ?? (current ? !!current.in_service : true);
+    if (name.length < 2) throw new HttpError(400, 'BAD_NAME', 'Informe o nome da seção.');
+    if (!GROUP_ORDER.includes(group)) throw new HttpError(400, 'BAD_GROUP', 'Grupo inválido.');
+    if (course && !VALID_COURSES.includes(course)) throw new HttpError(400, 'BAD_COURSE', 'Tempo inválido.');
+    return { name, group, kitchen: kitchen ? 1 : 0, course, inService: inService ? 1 : 0 };
+  }
+
+  function createCategory(actor, input = {}) {
+    const v = validateCategoryInput(input);
+    db.transaction(() => {
+      if (q.catByNameCI.get(v.name)) throw new HttpError(409, 'CATEGORY_EXISTS', 'Já existe uma seção com esse nome.');
+      q.catInsert.run(v.name, v.group, q.catMaxSortInGroup.get(v.group) + 10, v.kitchen, v.course, v.inService);
+      audit.log(actor, 'menu.category_create', 'category', v.name, v);
+    })();
+    emitMenu();
+    return categories();
+  }
+
+  function updateCategory(actor, name, input = {}) {
+    db.transaction(() => {
+      const current = q.catByName.get(name);
+      if (!current) throw new HttpError(404, 'NOT_FOUND', 'Seção não encontrada.');
+      const v = validateCategoryInput(input, current);
+      if (v.name !== name) {
+        const clash = q.catByNameCI.get(v.name);
+        if (clash && clash.name !== name) throw new HttpError(409, 'CATEGORY_EXISTS', 'Já existe uma seção com esse nome.');
+      }
+      q.catUpdate.run(v.name, v.group, v.kitchen, v.course, v.inService, name);
+      if (v.group !== current.group_key) q.catSetSort.run(q.catMaxSortInGroup.get(v.group) + 10, v.name);
+      if (v.name !== name) q.menuRenameCat.run(v.name, name);
+      audit.log(actor, 'menu.category_update', 'category', name, { de: serializeCategory(current), para: v });
+    })();
+    emitMenu();
+    return categories();
+  }
+
+  function deleteCategory(actor, name) {
+    db.transaction(() => {
+      const current = q.catByName.get(name);
+      if (!current) throw new HttpError(404, 'NOT_FOUND', 'Seção não encontrada.');
+      const n = q.menuCountInCat.get(name);
+      if (n > 0) throw new HttpError(409, 'CATEGORY_NOT_EMPTY', `A seção "${name}" ainda tem ${n} item(ns). Mova ou exclua os itens antes.`);
+      q.catDelete.run(name);
+      audit.log(actor, 'menu.category_delete', 'category', name, serializeCategory(current));
+    })();
+    emitMenu();
+    return categories();
+  }
+
+  function moveCategory(actor, name, dir) {
+    if (dir !== -1 && dir !== 1) throw new HttpError(400, 'BAD_REQUEST', 'Direção inválida.');
+    db.transaction(() => {
+      const current = q.catByName.get(name);
+      if (!current) throw new HttpError(404, 'NOT_FOUND', 'Seção não encontrada.');
+      const list = q.catInGroup.all(current.group_key);
+      if (moveInList(list, list.findIndex((c) => c.name === name), dir, (sort, row) => q.catSetSort.run(sort, row.name))) {
+        audit.log(actor, 'menu.category_move', 'category', name, { direcao: dir < 0 ? 'acima' : 'abaixo' });
+      }
+    })();
+    emitMenu();
+    return categories();
+  }
+
+  // ---------------------------------------------------------------- configurações
 
   function updateSettings(actor, input = {}) {
     const cur = settings();
@@ -621,6 +946,8 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       warnMinutes: input.warnMinutes ?? cur.warnMinutes,
       lateMinutes: input.lateMinutes ?? cur.lateMinutes,
       proposalTitle: input.proposalTitle == null ? cur.proposalTitle : cleanText(input.proposalTitle, 40),
+      serviceDefault: input.serviceDefault ?? cur.serviceDefault,
+      servicePct: input.servicePct ?? cur.servicePct,
     };
     if (next.proposalTitle.length < 3) throw new HttpError(400, 'BAD_TITLE', 'Informe o nome da proposta do mês.');
     if (!isInt(next.tableCount, LIMITS.minTables, LIMITS.maxTables)) {
@@ -628,6 +955,9 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     }
     if (!isInt(next.warnMinutes, 1, 240) || !isInt(next.lateMinutes, 2, 480) || next.lateMinutes <= next.warnMinutes) {
       throw new HttpError(400, 'BAD_TIMERS', 'O tempo de atraso deve ser maior que o de alerta.');
+    }
+    if (typeof next.serviceDefault !== 'boolean' || !isInt(next.servicePct, 0, 30)) {
+      throw new HttpError(400, 'BAD_SERVICE', 'Taxa de serviço deve estar entre 0% e 30%.');
     }
     db.transaction(() => {
       const maxActive = q.maxActiveTable.get();
@@ -638,11 +968,15 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
       q.setSetting.run('warn_minutes', String(next.warnMinutes));
       q.setSetting.run('late_minutes', String(next.lateMinutes));
       q.setSetting.run('proposal_title', next.proposalTitle);
+      q.setSetting.run('service_default', next.serviceDefault ? '1' : '0');
+      q.setSetting.run('service_pct', String(next.servicePct));
       audit.log(actor, 'settings.update', 'settings', null, { de: cur, para: next });
     })();
     emit('settings:changed', settings());
     return settings();
   }
+
+  // ---------------------------------------------------------------- histórico do dia
 
   function history(date) {
     const { startIso, endIso } = localDayRange(date);
@@ -676,8 +1010,9 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
         cancelledCents: cancellations.reduce((s, c) => s + c.valueCents, 0),
         closedTabsCount: closed.length,
         closedRevenueCents: closed.reduce((s, t) => s + t.closedTotalCents, 0),
+        closedServiceCents: closed.reduce((s, t) => s + (t.closedServiceCents || 0), 0),
         openTabsCount: open.length,
-        openTabsCents: open.reduce((s, t) => s + t.totalCents, 0),
+        openTabsCents: open.reduce((s, t) => s + t.grandTotalCents, 0),
       },
       tabs,
       orders,
@@ -708,10 +1043,12 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     const { startIso } = localDayRange(from);
     const { endIso } = localDayRange(to);
 
+    const cats = categories();
+    const catByName = new Map(cats.map((c) => [c.name, c]));
     const orders = loadOrders('business_date BETWEEN ? AND ?', [from, to]);
     const menuRows = new Map(db.prepare('SELECT * FROM menu_items').all().map((m) => [m.id, m]));
     const products = new Map();
-    const categories = new Map();
+    const categoryAgg = new Map();
     const byDay = new Map();
     const hours = Array.from({ length: 24 }, (_, h) => ({ hour: h, orders: 0, items: 0, revenueCents: 0 }));
     const waiters = new Map();
@@ -724,6 +1061,26 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     let cancelledQty = 0;
     let cancelledCents = 0;
     let sentQty = 0;
+
+    const productFor = (id, fallbackName, fallbackCategory) => {
+      if (!products.has(id)) {
+        const m = menuRows.get(id);
+        const category = m && !m.archived ? m.category : fallbackCategory;
+        products.set(id, {
+          menuItemId: id,
+          name: m?.name ?? fallbackName,
+          category,
+          isDish: STEP_COURSES.includes(catByName.get(category)?.course),
+          qty: 0,
+          revenueCents: 0,
+          cancelledQty: 0,
+          cancelledCents: 0,
+          orderIds: new Set(),
+          inCombos: 0,
+        });
+      }
+      return products.get(id);
+    };
 
     for (const o of orders) {
       const hour = new Date(o.receivedAt).getHours();
@@ -740,19 +1097,15 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
         tabsServed.add(o.tabId);
       }
       for (const i of o.items) {
-        const m = menuRows.get(i.menuItemId);
-        const name = m?.name ?? i.name;
-        const category = m && !m.archived ? m.category : i.category;
+        const p = productFor(i.menuItemId, i.name, i.category);
         const value = i.activeQty * i.unitPriceCents;
-        const p = products.get(i.menuItemId) || { menuItemId: i.menuItemId, name, category, qty: 0, revenueCents: 0, cancelledQty: 0, cancelledCents: 0, orderIds: new Set(), inCombos: 0 };
-        products.set(i.menuItemId, p);
         p.qty += i.activeQty;
         p.revenueCents += value;
         p.cancelledQty += i.cancelledQty;
         p.cancelledCents += i.cancelledQty * i.unitPriceCents;
         if (i.activeQty > 0) p.orderIds.add(o.id);
-        const c = categories.get(category) || { category, qty: 0, revenueCents: 0 };
-        categories.set(category, c);
+        const c = categoryAgg.get(p.category) || { category: p.category, qty: 0, revenueCents: 0 };
+        categoryAgg.set(p.category, c);
         c.qty += i.activeQty;
         c.revenueCents += value;
         salesCents += value;
@@ -784,33 +1137,28 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     }
 
     // "Preferência": quantas vezes o prato foi servido, avulso ou escolhido dentro do Menu Completo.
-    for (const ch of choices.values()) {
-      const p = products.get(ch.menuItemId);
-      if (p) p.inCombos += ch.qty;
-      else {
-        const m = menuRows.get(ch.menuItemId);
-        products.set(ch.menuItemId, { menuItemId: ch.menuItemId, name: ch.name, category: m && !m.archived ? m.category : '', qty: 0, revenueCents: 0, cancelledQty: 0, cancelledCents: 0, orderIds: new Set(), inCombos: ch.qty });
-      }
-    }
+    for (const ch of choices.values()) productFor(ch.menuItemId, ch.name, '').inCombos += ch.qty;
     const productList = [...products.values()]
       .map(({ orderIds, ...p }) => ({ ...p, ordersCount: orderIds.size, servedQty: p.qty + p.inCombos }))
       .sort((a, b) => b.qty - a.qty || b.revenueCents - a.revenueCents || a.name.localeCompare(b.name));
 
     const closedTabs = db.prepare("SELECT * FROM tabs WHERE status = 'closed' AND closed_at >= ? AND closed_at < ?").all(startIso, endIso);
     const closedRevenueCents = closedTabs.reduce((s, t) => s + t.closed_total_cents, 0);
+    const serviceCents = closedTabs.reduce((s, t) => s + (t.closed_service_cents || 0), 0);
     const avgTabMinutes = closedTabs.length
       ? closedTabs.reduce((s, t) => s + (new Date(t.closed_at) - new Date(t.opened_at)), 0) / closedTabs.length / 60000
       : null;
 
+    // Tempo de preparo: de quando o tempo foi liberado para a cozinha até ficar pronto.
     const prep = db
       .prepare(
-        `SELECT o.received_at AS r, MIN(a.at) AS p FROM orders o
-         JOIN audit_log a ON a.entity_id = o.id AND a.action = 'order.status' AND json_extract(a.details, '$.para') = 'pronto'
-         WHERE o.business_date BETWEEN ? AND ? GROUP BY o.id`,
+        `SELECT t.fired_at AS f, t.ready_at AS r FROM kitchen_tickets t JOIN orders o ON o.id = t.order_id
+         WHERE o.business_date BETWEEN ? AND ? AND t.fired_at IS NOT NULL AND t.ready_at IS NOT NULL`,
       )
       .all(from, to);
-    const avgPrepMinutes = prep.length ? prep.reduce((s, x) => s + (new Date(x.p) - new Date(x.r)), 0) / prep.length / 60000 : null;
+    const avgPrepMinutes = prep.length ? prep.reduce((s, x) => s + (new Date(x.r) - new Date(x.f)), 0) / prep.length / 60000 : null;
 
+    const catOrder = new Map(cats.map((c, i) => [c.name, i]));
     return {
       from,
       to,
@@ -822,6 +1170,7 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
         tablesServed: tabsServed.size,
         closedTabs: closedTabs.length,
         closedRevenueCents,
+        serviceCents,
         avgTicketCents: closedTabs.length ? Math.round(closedRevenueCents / closedTabs.length) : null,
         avgTabMinutes,
         cancelledQty,
@@ -832,7 +1181,7 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
         daysWithSales: byDay.size,
       },
       products: productList,
-      categories: CATEGORIES.map((c) => categories.get(c)).filter(Boolean).concat([...categories.values()].filter((c) => !CATEGORIES.includes(c.category))),
+      categories: [...categoryAgg.values()].sort((a, b) => (catOrder.get(a.category) ?? 999) - (catOrder.get(b.category) ?? 999)),
       days: days.filter((d) => byDay.has(d)).map((d) => byDay.get(d)),
       hours,
       waiters: [...waiters.values()].sort((a, b) => b.revenueCents - a.revenueCents),
@@ -849,6 +1198,12 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
 
   return {
     report,
+    categories,
+    createCategory,
+    updateCategory,
+    deleteCategory,
+    moveCategory,
+    moveMenuItem,
     removeMenuItem,
     settings,
     menu,
@@ -857,9 +1212,11 @@ export function createServices({ db, audit, auth, emit = () => {} }) {
     getOrder,
     loadOrders,
     createOrder,
-    setOrderStatus,
+    setTicketStatus,
+    fireTicket,
     cancelItem,
     requestBill,
+    setService,
     getBill,
     closeTab,
     reopenTab,

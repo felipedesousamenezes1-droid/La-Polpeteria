@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { io } from 'socket.io-client';
-import { startServer, tmpDataDir, login, newOrder, ID, PRICE } from './helpers.js';
+import { startServer, tmpDataDir, login, newOrder, ID, PRICE, ticketPath } from './helpers.js';
 
 let srv;
 let dataDir;
@@ -82,7 +82,7 @@ describe('Criação de pedidos', () => {
 describe('Mudança de status', () => {
   test('Novo → Preparando → Pronto → Retirado, com controle de concorrência', { timeout: 30_000 }, async () => {
     const order = (await garcom.post('/api/orders', newOrder(5, [[ID.ortolana, 1]]))).data.order;
-    const move = (dev, from, to) => dev.post(`/api/orders/${order.id}/status`, { from, to });
+    const move = (dev, from, to) => dev.post(ticketPath(order.id), { from, to });
 
     assert.equal((await move(garcom, 'novo', 'preparando')).status, 403, 'garçom não altera preparo');
     assert.equal((await move(cozinha, 'novo', 'pronto')).status, 400, 'não pula etapa');
@@ -99,7 +99,7 @@ describe('Mudança de status', () => {
     assert.equal((await move(cozinha, 'preparando', 'pronto')).data.order.status, 'pronto');
     assert.equal((await move(garcom, 'pronto', 'entregue')).data.order.status, 'entregue');
 
-    const audit = (await admin.get('/api/admin/audit')).data.entries.filter((e) => e.entityId === order.id && e.action === 'order.status');
+    const audit = (await admin.get('/api/admin/audit')).data.entries.filter((e) => e.entityId === order.id && e.action === 'ticket.status');
     assert.deepEqual(
       audit.map((e) => `${e.details.de}>${e.details.para}`).reverse(),
       ['novo>preparando', 'preparando>pronto', 'pronto>entregue'],
@@ -111,8 +111,8 @@ describe('Mudança de status', () => {
     const socket = io(srv.base, { auth: { token: garcom.token }, transports: ['websocket'] });
     await new Promise((r) => socket.on('connect', r));
     const ready = new Promise((resolve) => socket.on('order:upsert', ({ data }) => data.id === order.id && data.status === 'pronto' && resolve(data)));
-    await cozinha.post(`/api/orders/${order.id}/status`, { from: 'novo', to: 'preparando' });
-    await cozinha.post(`/api/orders/${order.id}/status`, { from: 'preparando', to: 'pronto' });
+    await cozinha.post(ticketPath(order.id), { from: 'novo', to: 'preparando' });
+    await cozinha.post(ticketPath(order.id), { from: 'preparando', to: 'pronto' });
     const got = await ready;
     socket.close();
     assert.equal(got.tableNumber, 6);
@@ -155,6 +155,7 @@ describe('Cancelamentos e imutabilidade', () => {
       'DELETE FROM tabs',
       "UPDATE orders SET table_number = 99",
       'DELETE FROM menu_items',
+      'DELETE FROM kitchen_tickets',
     ];
     for (const sql of attempts) {
       assert.throws(() => db.prepare(sql).run(), /PROTEGIDO/, `deveria bloquear: ${sql}`);

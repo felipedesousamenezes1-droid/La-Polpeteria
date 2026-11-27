@@ -58,6 +58,16 @@ function dayData({ services, audit }, date) {
       );
     }
   }
+  // Taxa de serviço: uma linha por conta (no dia do fechamento; se aberta, no dia da abertura).
+  for (const t of h.tabs) {
+    const day = t.closedAt ? localDate(new Date(t.closedAt)) : t.businessDate;
+    if (!t.serviceCents || day !== date) continue;
+    rows.push(
+      [date, '', t.tableNumber, t.id, TAB_STATUS_LABELS[t.status] || '', '', '', 'Outros', `Taxa de serviço (${t.servicePct}%)`, '', 1, 0, 1, money(t.serviceCents), money(t.serviceCents), '', '']
+        .map(csvCell)
+        .join(';'),
+    );
+  }
   const data = {
     data: date,
     resumo: h.summary,

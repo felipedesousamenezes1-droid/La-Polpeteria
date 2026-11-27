@@ -15,10 +15,12 @@ function billText(bill, split) {
       ...(l.components || []).map((c) => `   ${c.step}: ${c.name}`),
     ]),
     '',
-    `TOTAL: ${money(bill.totalCents)}`,
+    `Consumo: ${money(bill.totalCents)}`,
+    bill.serviceEnabled ? `Serviço (${bill.servicePct}%): ${money(bill.serviceCents)}` : 'Serviço: não incluído',
+    `TOTAL: ${money(bill.grandTotalCents)}`,
   ];
   if (split > 1) {
-    const parts = splitCents(bill.totalCents, split);
+    const parts = splitCents(bill.grandTotalCents, split);
     lines.push(`Dividido por ${split}: ${parts.map((p) => money(p)).join(' / ')}`);
   }
   if (bill.cancelled.length) lines.push('', `Itens cancelados (não cobrados): ${bill.cancelled.length}`);
@@ -104,19 +106,19 @@ function BillView({ tabId, onClosed }) {
   }, [tabId]);
   useEffect(() => {
     load();
-  }, [load, tab?.totalCents, tab?.status, ordersKey]);
+  }, [load, tab?.totalCents, tab?.grandTotalCents, tab?.serviceEnabled, tab?.status, ordersKey]);
 
   if (error && !bill) return <EmptyState title="Não foi possível carregar a conta">{error}</EmptyState>;
   if (!bill) return <EmptyState title="Carregando conta…" />;
 
   const closed = bill.tab.status === 'closed';
-  const parts = splitCents(bill.totalCents, split);
+  const parts = splitCents(bill.grandTotalCents, split);
 
   async function closeTab() {
     setBusy(true);
     try {
-      await actions.closeTab(tabId, bill.totalCents);
-      toast(`Conta da mesa ${bill.tab.tableNumber} fechada: ${money(bill.totalCents)}`, 'ok');
+      await actions.closeTab(tabId, bill.grandTotalCents);
+      toast(`Conta da mesa ${bill.tab.tableNumber} fechada: ${money(bill.grandTotalCents)}`, 'ok');
       setConfirmClose(false);
       onClosed?.();
     } catch (e) {
@@ -162,7 +164,7 @@ function BillView({ tabId, onClosed }) {
 
         {bill.pendingKitchen > 0 && !closed && (
           <p className="mb-3 rounded-xl bg-oro-100 p-3 text-sm font-semibold text-oro-700">
-            {bill.pendingKitchen} pedido(s) desta mesa ainda em preparo na cozinha.
+            {bill.pendingKitchen} prato(s) desta mesa ainda não saíram da cozinha (em preparo ou aguardando o garçom liberar).
           </p>
         )}
 
@@ -220,11 +222,38 @@ function BillView({ tabId, onClosed }) {
             </tbody>
             <tfoot className="border-t-2 border-inchiostro">
               <tr>
+                <td colSpan={4} className="px-3 pt-3 text-right font-semibold">
+                  Consumo ({bill.itemsCount} itens)
+                </td>
+                <td className="px-3 pt-3 text-right font-semibold tabular-nums" data-testid="consumo-conta">
+                  {money(bill.totalCents)}
+                </td>
+                {!closed && <td />}
+              </tr>
+              <tr>
+                <td colSpan={4} className="px-3 py-1 text-right">
+                  <span className="inline-flex flex-wrap items-center justify-end gap-2">
+                    <span className={bill.serviceEnabled ? 'font-semibold' : 'text-seppia line-through'}>Serviço ({bill.servicePct}%)</span>
+                    {!closed && (
+                      <button
+                        className={`rounded-lg px-3 py-1.5 text-xs font-bold ${bill.serviceEnabled ? 'border border-crema-300 bg-white' : 'bg-basilico-700 text-white'}`}
+                        onClick={() => actions.setService(tabId, !bill.serviceEnabled).catch((e) => toast(e.message, 'error'))}
+                        data-testid="servico-caixa"
+                      >
+                        {bill.serviceEnabled ? 'Retirar 10%' : 'Incluir 10%'}
+                      </button>
+                    )}
+                  </span>
+                </td>
+                <td className="px-3 py-1 text-right tabular-nums">{money(bill.serviceCents)}</td>
+                {!closed && <td />}
+              </tr>
+              <tr>
                 <td colSpan={4} className="px-3 py-3 text-right font-serif text-xl font-bold">
-                  Total ({bill.itemsCount} itens)
+                  Total a pagar
                 </td>
                 <td className="px-3 py-3 text-right font-serif text-2xl font-bold tabular-nums" data-testid="total-conta">
-                  {money(bill.totalCents)}
+                  {money(bill.grandTotalCents)}
                 </td>
                 {!closed && <td />}
               </tr>
@@ -284,7 +313,7 @@ function BillView({ tabId, onClosed }) {
           </button>
         ) : (
           <button className="btn-primary min-h-14 w-full text-lg sm:w-auto sm:flex-[2]" onClick={() => setConfirmClose(true)} data-testid="fechar-conta">
-            <Icon name="lock" /> Fechar conta · {money(bill.totalCents)}
+            <Icon name="lock" /> Fechar conta · {money(bill.grandTotalCents)}
           </button>
         )}
       </div>
@@ -307,22 +336,23 @@ function BillView({ tabId, onClosed }) {
             </li>
           ))}
         </ul>
-        <p className="mt-2 text-xs text-seppia">A soma das partes é exatamente o total ({money(bill.totalCents)}).</p>
+        <p className="mt-2 text-xs text-seppia">A soma das partes é exatamente o total a pagar ({money(bill.grandTotalCents)}).</p>
       </Modal>
 
       <ConfirmDialog
         open={confirmClose}
         title={`Fechar a conta da mesa ${bill.tab.tableNumber}?`}
-        confirmLabel={`Fechar · ${money(bill.totalCents)}`}
+        confirmLabel={`Fechar · ${money(bill.grandTotalCents)}`}
         busy={busy}
         onCancel={() => setConfirmClose(false)}
         onConfirm={closeTab}
       >
         <p>
-          Total conferido: <strong>{money(bill.totalCents)}</strong> ({bill.itemsCount} itens).
+          Total conferido: <strong>{money(bill.grandTotalCents)}</strong> ({bill.itemsCount} itens
+          {bill.serviceEnabled ? ` + serviço de ${bill.servicePct}%` : ', sem serviço'}).
         </p>
         <p className="mt-2 text-sm text-seppia">A mesa ficará travada. Para reabrir será necessário o PIN de Admin, e a reabertura fica registrada.</p>
-        {bill.pendingKitchen > 0 && <p className="mt-2 text-sm font-semibold text-oro-700">Atenção: {bill.pendingKitchen} pedido(s) ainda na cozinha.</p>}
+        {bill.pendingKitchen > 0 && <p className="mt-2 text-sm font-semibold text-oro-700">Atenção: {bill.pendingKitchen} prato(s) ainda não saíram da cozinha.</p>}
       </ConfirmDialog>
       {reopen && <ReopenDialog tab={bill.tab} onClose={() => setReopen(false)} onDone={() => setReopen(false)} />}
       {cancelling && <CancelDialog item={cancelling.item} order={cancelling.order} onClose={() => setCancelling(null)} />}
@@ -355,7 +385,7 @@ export default function CashierScreen() {
       <span className="min-w-0 flex-1 text-xs text-seppia">
         {t.status === 'closed' ? `fechada ${time(t.closedAt)}` : t.status === 'billing' ? `conta pedida ${time(t.billRequestedAt)}` : `aberta ${time(t.openedAt)}`}
       </span>
-      <span className="font-bold tabular-nums">{money(t.status === 'closed' ? t.closedTotalCents : t.totalCents)}</span>
+      <span className="font-bold tabular-nums">{money(t.status === 'closed' ? t.closedTotalCents : t.grandTotalCents)}</span>
     </button>
   );
 

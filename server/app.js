@@ -143,8 +143,11 @@ export async function createApp(config = loadConfig(), { logger = console } = {}
     const { order, duplicate } = services.createOrder(req.actor, req.body);
     res.status(duplicate ? 200 : 201).json({ order, duplicate });
   });
-  api.post('/orders/:id/status', allow('cozinha', 'garcom', 'caixa'), (req, res) => {
-    res.json({ order: services.setOrderStatus(req.actor, req.params.id, req.body?.from, req.body?.to) });
+  api.post('/tickets/:id/status', allow('cozinha', 'garcom', 'caixa'), (req, res) => {
+    res.json({ order: services.setTicketStatus(req.actor, req.params.id, req.body?.from, req.body?.to) });
+  });
+  api.post('/tickets/:id/fire', allow('garcom', 'caixa'), (req, res) => {
+    res.json({ order: services.fireTicket(req.actor, req.params.id) });
   });
   api.post('/items/:id/cancel', (req, res) => {
     res.json(services.cancelItem(req.actor, req.params.id, req.body || {}));
@@ -153,6 +156,9 @@ export async function createApp(config = loadConfig(), { logger = console } = {}
     res.json({ tab: services.requestBill(req.actor, req.params.id) });
   });
   api.get('/tabs/:id/bill', allow('garcom', 'caixa'), (req, res) => res.json(services.getBill(req.params.id)));
+  api.post('/tabs/:id/service', allow('garcom', 'caixa'), (req, res) => {
+    res.json({ tab: services.setService(req.actor, req.params.id, req.body?.enabled) });
+  });
   api.post('/tabs/:id/close', allow('caixa'), (req, res) => {
     res.json(services.closeTab(req.actor, req.params.id, req.body?.expectedTotalCents));
   });
@@ -167,6 +173,12 @@ export async function createApp(config = loadConfig(), { logger = console } = {}
   admin.post('/menu', (req, res) => res.status(201).json(services.createMenuItem(req.actor, req.body)));
   admin.put('/menu/:id', (req, res) => res.json(services.updateMenuItem(req.actor, Number(req.params.id), req.body)));
   admin.delete('/menu/:id', (req, res) => res.json(services.removeMenuItem(req.actor, Number(req.params.id))));
+  admin.post('/menu/:id/move', (req, res) => res.json(services.moveMenuItem(req.actor, Number(req.params.id), req.body?.dir)));
+  admin.get('/categories', (req, res) => res.json(services.categories()));
+  admin.post('/categories', (req, res) => res.status(201).json(services.createCategory(req.actor, req.body)));
+  admin.put('/categories/:name', (req, res) => res.json(services.updateCategory(req.actor, req.params.name, req.body)));
+  admin.delete('/categories/:name', (req, res) => res.json(services.deleteCategory(req.actor, req.params.name)));
+  admin.post('/categories/:name/move', (req, res) => res.json(services.moveCategory(req.actor, req.params.name, req.body?.dir)));
   admin.put('/settings', (req, res) => res.json(services.updateSettings(req.actor, req.body)));
   admin.put('/pins/:role', (req, res) => {
     auth.changePin(req.actor, req.params.role, req.body?.pin);

@@ -38,10 +38,10 @@ export default function App() {
   // Garçom: som + vibração + faixa de alerta quando a cozinha marca "pronto".
   useEffect(() => {
     if (screen !== 'garcom') return undefined;
-    return on('order:ready', (o) => {
+    return on('ticket:ready', ({ ticket }) => {
       playReady();
       vibrate([200, 100, 200]);
-      addReadyAlert(o.id);
+      addReadyAlert(ticket.id);
     });
   }, [screen]);
 

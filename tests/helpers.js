@@ -24,6 +24,7 @@ const NAMES = {
   limonata: 'Soda italiana',
   chianti: 'Aperol Spritz',
   espresso: 'Heineken long neck',
+  rolha: 'Taxa de rolha',
 };
 export const ID = {};
 export const PRICE = {};
@@ -153,6 +154,9 @@ export function newOrder(tableNumber, items, extra = {}) {
 }
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Rota de andamento de um tempo da cozinha ("unico" quando o pedido não tem Menu Completo). */
+export const ticketPath = (orderId, course = 'unico', action = 'status') => `/api/tickets/${encodeURIComponent(`${orderId}:${course}`)}/${action}`;
 
 export function stripVolatile(state) {
   const { serverTime, ...rest } = state;

@@ -1,8 +1,8 @@
-/** Situação de cada mesa, combinando servidor (contas/pedidos) e aparelho (fila offline/rascunhos). */
+/** Situação de cada mesa, combinando servidor (contas/tempos da cozinha) e aparelho (fila offline/rascunhos). */
 export function computeTableInfo(s) {
   const info = new Map();
   const get = (n) => {
-    if (!info.has(n)) info.set(n, { tab: null, ready: 0, inKitchen: 0, pending: 0, rejected: 0, draft: 0 });
+    if (!info.has(n)) info.set(n, { tab: null, ready: 0, inKitchen: 0, held: 0, pending: 0, rejected: 0, draft: 0 });
     return info.get(n);
   };
   const activeTabIds = new Set();
@@ -12,9 +12,13 @@ export function computeTableInfo(s) {
     activeTabIds.add(t.id);
   }
   for (const o of Object.values(s.orders)) {
-    if (!activeTabIds.has(o.tabId) || o.fullyCancelled) continue;
-    if (o.status === 'pronto') get(o.tableNumber).ready++;
-    if (o.status === 'novo' || o.status === 'preparando') get(o.tableNumber).inKitchen++;
+    if (!activeTabIds.has(o.tabId)) continue;
+    for (const t of o.tickets || []) {
+      if (t.fullyCancelled) continue;
+      if (t.status === 'pronto') get(o.tableNumber).ready++;
+      if (t.status === 'novo' || t.status === 'preparando') get(o.tableNumber).inKitchen++;
+      if (t.status === 'aguardando') get(o.tableNumber).held++;
+    }
   }
   for (const e of s.outbox.list) {
     if (e.status === 'pending') get(e.tableNumber).pending++;
